@@ -1,0 +1,10 @@
+alpaca-py==0.33.1
+yfinance==0.2.51
+finvizfinance>=1.0.0
+plotly>=5.18.0
+pandas>=2.2.3,<3.0
+numpy>=1.26.4,<3.0
+ta==0.11.0
+requests==2.32.3
+python-dotenv==1.0.1
+streamlit==1.39.0
