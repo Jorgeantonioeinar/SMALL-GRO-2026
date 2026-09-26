@@ -406,8 +406,25 @@ class DataFetcher:
         RVOL session-aware (compatibilidad hacia atrás).
         Equivale a get_volume_metrics(symbol)["rvol_session"].
         """
-        metrics = self.get_volume_metrics(symbol)
-        return metrics.get("rvol_session")
+        try:
+            metrics = self.get_volume_metrics(symbol)
+            return metrics.get("rvol_session")
+        except Exception:
+            # Fallback mínimo si get_volume_metrics falla
+            bars = self.get_bars(symbol, minutes_back=config.LOOKBACK_MINUTES_FALLBACK)
+            if bars.empty or "volume" not in bars.columns:
+                return None
+            today_volume = float(bars["volume"].sum())
+            avg_volume_10d = self._get_avg_daily_volume_alpaca(symbol)
+            if avg_volume_10d is None:
+                avg_volume_10d = self._get_avg_daily_volume_twelvedata(symbol)
+            if not avg_volume_10d or avg_volume_10d <= 0:
+                return None
+            minutes_elapsed = min(len(bars), 390)
+            expected = avg_volume_10d * (minutes_elapsed / 390)
+            if expected <= 0:
+                return None
+            return round(today_volume / expected, 2)
 
     def get_volume_metrics(self, symbol: str) -> dict:
         """

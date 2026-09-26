@@ -407,10 +407,17 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     elif premarket_volume and float_shares:
         structural_rvol = round(premarket_volume / float_shares, 2)
 
-    # Métricas de volumen separadas (V7.2)
+    # Métricas de volumen separadas (V7.2) — con fallback si el método no existe
+    vol_metrics = {}
     try:
-        vol_metrics = fetcher.get_volume_metrics(symbol)
-    except Exception:
+        if hasattr(fetcher, "get_volume_metrics"):
+            vol_metrics = fetcher.get_volume_metrics(symbol) or {}
+        else:
+            # Compatibilidad: data_fetcher antiguo sin V7.2
+            r = fetcher.get_relative_volume(symbol) if hasattr(fetcher, "get_relative_volume") else None
+            vol_metrics = {"rvol_session": r, "rvol_daily": r}
+    except Exception as e:
+        logger.warning(f"[{symbol}] volume metrics: {e}")
         vol_metrics = {}
     rvol_daily = vol_metrics.get("rvol_daily")
     rvol_session = vol_metrics.get("rvol_session")
@@ -516,7 +523,16 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
             result["notes"].append(f"Gap insuficiente ({gap_pct}% < {config.GAP_MIN_PCT}%)")
 
     # --- 2) RVOL separado (V7.2): session / daily / float_turnover ---
-    vol_metrics = fetcher.get_volume_metrics(symbol)
+    vol_metrics = {}
+    try:
+        if hasattr(fetcher, "get_volume_metrics"):
+            vol_metrics = fetcher.get_volume_metrics(symbol) or {}
+        else:
+            r = fetcher.get_relative_volume(symbol) if hasattr(fetcher, "get_relative_volume") else None
+            vol_metrics = {"rvol_session": r, "rvol_daily": r}
+    except Exception as e:
+        logger.warning(f"[{symbol}] volume metrics: {e}")
+        vol_metrics = {}
     result["rvol_daily"] = vol_metrics.get("rvol_daily")
     result["rvol_session"] = vol_metrics.get("rvol_session")
     result["float_turnover"] = vol_metrics.get("float_turnover")
@@ -527,6 +543,11 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
     else:
         # Preferimos session-aware para scalping; si no hay, daily
         rvol = vol_metrics.get("rvol_session") or vol_metrics.get("rvol_daily")
+        if rvol is None and hasattr(fetcher, "get_relative_volume"):
+            try:
+                rvol = fetcher.get_relative_volume(symbol)
+            except Exception:
+                rvol = None
     result["rvol"] = rvol
     if rvol is not None:
         if rvol >= config.RVOL_MIN:
