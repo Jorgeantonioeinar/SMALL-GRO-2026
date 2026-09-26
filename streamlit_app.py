@@ -321,6 +321,8 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         df["short_pressure"] = None
     if "rvol_session" not in df.columns:
         df["rvol_session"] = None
+    if "scalp_ready" not in df.columns:
+        df["scalp_ready"] = None
 
     # Preferir RVOL session-aware (scalping); fallback al rvol clásico
     if "rvol_session" in df.columns:
@@ -331,7 +333,7 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
     cols = [
         "symbol", "price", "gap_pct", "rvol_display", "float_shares", "rsi",
         "score", "entry_score", "chase_status", "dilution_risk",
-        "short_pressure", "data_confidence", "halted", "signal",
+        "short_pressure", "data_confidence", "halted", "scalp_ready", "signal",
     ]
     cols = [c for c in cols if c in df.columns]
     df_display = df[cols].copy()
@@ -354,6 +356,7 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "short_pressure": "Short",
         "data_confidence": "Confianza",
         "halted": "Halt",
+        "scalp_ready": "Scalp",
         "signal": "Señal",
     }
     df_display = df_display.rename(columns={k: v for k, v in rename_map.items() if k in df_display.columns})
@@ -372,6 +375,10 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
     if "Halt" in df_display.columns:
         df_display["Halt"] = df_display["Halt"].map(lambda v: "🔴 SÍ" if v else "🟢 No")
 
+    scalp_emoji = {"LISTO": "🟢 LISTO", "VIGILAR": "🟡 VIGILAR", "NO": "🔴 NO"}
+    if "Scalp" in df_display.columns:
+        df_display["Scalp"] = df_display["Scalp"].map(lambda v: scalp_emoji.get(v, v) if v else "⚪ N/D")
+
     short_emoji = {
         "BAJO": "🟢 Bajo", "NORMAL": "🟡 Normal", "ALTO": "🟠 Alto",
         "MUY_ALTO": "🔴 Muy alto", "N/D": "⚪ N/D",
@@ -388,16 +395,25 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         estado = str(row.get("Estado", ""))
         buen_momento = ("MUY EXTENDIDO" not in estado) and ("NO-CHASE" not in estado)
         en_halt = "SÍ" in str(row.get("Halt", ""))
+        scalp = str(row.get("Scalp", ""))
         conf = row.get("Confianza")
         try:
             conf_ok = conf is None or float(conf) >= 70
         except Exception:
             conf_ok = True
-        if en_halt:
-            color = "background-color: #f8d7da"
+        if en_halt or "NO" in scalp and "LISTO" not in scalp and "VIGILAR" not in scalp:
+            # halt o Scalp NO
+            if en_halt:
+                color = "background-color: #f8d7da"
+            elif "🔴 NO" in scalp or scalp.strip() == "NO":
+                color = "background-color: #f8d7da"
+            else:
+                color = ""
+        elif "LISTO" in scalp:
+            color = "background-color: #d4f7d4"
         elif buena_calidad and buen_momento and conf_ok:
             color = "background-color: #d4f7d4"
-        elif buena_calidad:
+        elif "VIGILAR" in scalp or buena_calidad:
             color = "background-color: #fff3cd"
         else:
             color = ""
@@ -423,7 +439,8 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "🟡 Amarillo = Quality bueno pero extendido o datos incompletos · "
         "🔴 Rojo = HALT activo (no operar) · "
         "Confianza < 70 → solo VIGILAR · "
-        "Short = % short volume FINRA (flujo off-exchange del día más reciente; contexto, no señal única)."
+        "Short = % short volume FINRA (contexto) · "
+        "Scalp = señal unificada LISTO / VIGILAR / NO (Quality+Entry+Halt+Confianza+horario)."
     )
 
 
@@ -520,6 +537,28 @@ with tab_live:
             "Comparar ambos: corre los dos y los muestra apilados (Clásico arriba, Smart abajo) para ver todas las columnas."
         ),
     )
+
+    session_filter_label = st.radio(
+        "⏰ Filtro horario (hora NY)",
+        [
+            "Sin filtro (todo el día)",
+            "Solo ventana fuerte 9:30–11:00 ET",
+            "Premarket + fuerte 4:00–11:00 ET",
+        ],
+        index=0,
+        horizontal=True,
+        help=(
+            "Fuera de la ventana elegida el bot no marca LISTO ni COMPRA_LARGO automática "
+            "(como máximo VIGILAR). Ideal para gap & go / scalping de primera hora."
+        ),
+        key="session_filter_ui",
+    )
+    _sf_map = {
+        "Sin filtro (todo el día)": "off",
+        "Solo ventana fuerte 9:30–11:00 ET": "strong",
+        "Premarket + fuerte 4:00–11:00 ET": "premarket_strong",
+    }
+    config._SESSION_FILTER_RUNTIME = _sf_map.get(session_filter_label, "off")
 
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
         with st.spinner("Analizando el mercado (TradingView/Finviz + Alpaca)..."):

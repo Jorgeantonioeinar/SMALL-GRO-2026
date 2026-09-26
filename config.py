@@ -389,3 +389,15 @@ DATA_CONFIDENCE_MIN_FOR_BUY = 70
 
 # Halt Engine (Nasdaq Trader RSS, gratis, sin API key)
 HALT_ENGINE_ENABLED = True
+
+
+# ---------------------------------------------------------------------------
+# V7.3 — FILTRO HORARIO + SEÑAL "LISTO PARA SCALPEAR"
+# ---------------------------------------------------------------------------
+# Ventana fuerte de gap & go / scalping (hora Nueva York).
+SESSION_FILTER_ENABLED_DEFAULT = False  # el usuario lo activa en la UI
+SESSION_STRONG_START = "09:30"   # apertura regular
+SESSION_STRONG_END = "11:00"     # fin de primera hora / ventana fuerte
+SESSION_PREMARKET_START = "04:00"
+# Entry score mínimo para marcar LISTO (Quality ya usa SCORE_MIN_TO_BUY)
+ENTRY_SCORE_MIN_FOR_READY = 7.0

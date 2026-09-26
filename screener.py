@@ -85,6 +85,129 @@ def compute_data_confidence(result: dict, pmh=None, has_prev_close: bool = True)
     }
 
 
+
+def _parse_hhmm(s: str) -> tuple[int, int]:
+    parts = (s or "00:00").strip().split(":")
+    return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
+
+
+def is_in_strong_session(now_et=None) -> bool:
+    """True si la hora actual (ET) está en la ventana fuerte de scalping."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        if now_et is None:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+        start_h, start_m = _parse_hhmm(getattr(config, "SESSION_STRONG_START", "09:30"))
+        end_h, end_m = _parse_hhmm(getattr(config, "SESSION_STRONG_END", "11:00"))
+        minutes = now_et.hour * 60 + now_et.minute
+        return (start_h * 60 + start_m) <= minutes < (end_h * 60 + end_m)
+    except Exception:
+        return True  # si falla TZ, no bloquear
+
+
+def is_in_premarket_or_strong(now_et=None) -> bool:
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        if now_et is None:
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+        pm_h, pm_m = _parse_hhmm(getattr(config, "SESSION_PREMARKET_START", "04:00"))
+        end_h, end_m = _parse_hhmm(getattr(config, "SESSION_STRONG_END", "11:00"))
+        minutes = now_et.hour * 60 + now_et.minute
+        return (pm_h * 60 + pm_m) <= minutes < (end_h * 60 + end_m)
+    except Exception:
+        return True
+
+
+def compute_scalp_ready(result: dict, session_filter: str = "off") -> dict:
+    """
+    Señal unificada para scalping small caps.
+
+    session_filter:
+      "off"              — no filtrar por hora
+      "strong"           — solo 9:30–11:00 ET
+      "premarket_strong" — 4:00–11:00 ET
+
+    Devuelve:
+      scalp_ready: "LISTO" | "VIGILAR" | "NO"
+      scalp_reasons: lista de textos cortos
+      in_session_window: bool
+    """
+    reasons = []
+    halted = bool(result.get("halted"))
+    conf = result.get("data_confidence")
+    try:
+        conf = float(conf) if conf is not None else None
+    except Exception:
+        conf = None
+    quality = result.get("score")
+    try:
+        quality = float(quality) if quality is not None else 0.0
+    except Exception:
+        quality = 0.0
+    entry = result.get("entry_score")
+    try:
+        entry = float(entry) if entry is not None else None
+    except Exception:
+        entry = None
+    chase = (result.get("chase_status") or "").upper()
+    dil = (result.get("dilution_risk") or "").upper()
+    signal = (result.get("signal") or "").upper()
+
+    conf_min = getattr(config, "DATA_CONFIDENCE_MIN_FOR_BUY", 70)
+    q_min = getattr(config, "SCORE_MIN_TO_BUY", 9.0)
+    e_min = getattr(config, "ENTRY_SCORE_MIN_FOR_READY", 7.0)
+
+    # Ventana horaria
+    in_window = True
+    if session_filter == "strong":
+        in_window = is_in_strong_session()
+    elif session_filter == "premarket_strong":
+        in_window = is_in_premarket_or_strong()
+
+    if halted:
+        return {"scalp_ready": "NO", "scalp_reasons": ["HALT"], "in_session_window": in_window}
+    if signal in ("DESCARTAR", "SIN COBERTURA"):
+        reasons.append(signal)
+        return {"scalp_ready": "NO", "scalp_reasons": reasons or ["DESCARTAR"], "in_session_window": in_window}
+    if dil in ("ALTO", "HIGH"):
+        return {"scalp_ready": "NO", "scalp_reasons": ["Dilución ALTA"], "in_session_window": in_window}
+    if chase in ("NO_CHASE", "MUY_EXTENDIDO"):
+        return {"scalp_ready": "NO", "scalp_reasons": [f"Estado {chase}"], "in_session_window": in_window}
+    if conf is not None and conf < conf_min:
+        return {"scalp_ready": "NO", "scalp_reasons": [f"Confianza {conf:.0f}<{conf_min}"], "in_session_window": in_window}
+
+    # Fuera de ventana → como máximo VIGILAR (nunca LISTO automático)
+    if session_filter != "off" and not in_window:
+        reasons.append("Fuera de ventana horaria")
+        if quality >= q_min - 2:
+            return {"scalp_ready": "VIGILAR", "scalp_reasons": reasons, "in_session_window": False}
+        return {"scalp_ready": "NO", "scalp_reasons": reasons, "in_session_window": False}
+
+    hard_ok = (
+        quality >= q_min
+        and entry is not None and entry >= e_min
+        and chase in ("NORMAL", "", "SIN_DATOS")
+        and (conf is None or conf >= conf_min)
+    )
+    if hard_ok:
+        return {"scalp_ready": "LISTO", "scalp_reasons": ["Quality+Entry+NORMAL"], "in_session_window": in_window}
+
+    # Casi listo
+    soft_ok = quality >= (q_min - 2) or (entry is not None and entry >= e_min - 1)
+    if soft_ok or chase == "EXTENDIDO" or signal == "VIGILAR":
+        if chase == "EXTENDIDO":
+            reasons.append("EXTENDIDO")
+        if quality < q_min:
+            reasons.append(f"Quality {quality:.1f}<{q_min}")
+        if entry is None or entry < e_min:
+            reasons.append(f"Entry bajo")
+        return {"scalp_ready": "VIGILAR", "scalp_reasons": reasons or ["Casi listo"], "in_session_window": in_window}
+
+    return {"scalp_ready": "NO", "scalp_reasons": reasons or ["Score insuficiente"], "in_session_window": in_window}
+
+
 def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
     """Añade halt_status + short volume + data_confidence a cualquier resultado."""
     if get_halt_engine is not None:
@@ -131,6 +254,18 @@ def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
     if result.get("data_quality") == "LOW" and result.get("signal") == "COMPRA_LARGO":
         result["signal"] = "VIGILAR"
         result["notes"] = (result.get("notes") or []) + ["Data confidence LOW → solo vigilancia"]
+
+    # Señal unificada "Listo para scalpear" (usa filtro de sesión de session_state vía config runtime)
+    session_filter = getattr(config, "_SESSION_FILTER_RUNTIME", "off")
+    scalp = compute_scalp_ready(result, session_filter=session_filter)
+    result["scalp_ready"] = scalp["scalp_ready"]
+    result["scalp_reasons"] = scalp.get("scalp_reasons") or []
+    result["in_session_window"] = scalp.get("in_session_window", True)
+
+    # Si filtro horario activo y fuera de ventana, no empujar COMPRA_LARGO
+    if session_filter != "off" and not result["in_session_window"] and result.get("signal") == "COMPRA_LARGO":
+        result["signal"] = "VIGILAR"
+        result["notes"] = (result.get("notes") or []) + ["Fuera de ventana horaria de scalping"]
 
     return result
 
