@@ -49,3 +49,20 @@
 - Separar RVOL Daily / Intraday / Vol-Float en columnas.
 - Catalyst Classifier (GlobeNewswire / FDA).
 - Journal con MFE/MAE.
+
+# V7.2 — Short Volume FINRA + RVOL separado
+
+## Nuevas funciones
+1. **short_volume.py** — FINRA Daily Short Sale Volume (CDN gratis, sin API key).
+   - short_pct, short_pressure (BAJO / NORMAL / ALTO / MUY_ALTO)
+   - Columna **Short** en el dashboard
+2. **RVOL separado** en `get_volume_metrics()`:
+   - rvol_daily (volumen hoy / promedio 10d)
+   - rvol_session (normalizado a fracción de sesión — preferido para scalping)
+   - float_turnover (volumen / float)
+3. El RVOL mostrado en UI usa preferentemente **rvol_session**.
+
+## Notas de uso
+- Short volume FINRA es **flujo del día** (off-exchange), NO short interest.
+- Valores típicos 30-55% son normales; >70% es presión alta relativa.
+- No bloquea entradas por sí solo; es contexto de confirmación.

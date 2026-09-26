@@ -403,36 +403,66 @@ class DataFetcher:
 
     def get_relative_volume(self, symbol: str, avg_daily_volume: float = None):
         """
-        RVOL = volumen acumulado hoy / volumen promedio de los últimos 10
-        días hábiles. Ya NO depende de Yahoo Finance para el promedio:
-
-          1. Alpaca (barras DIARIAS, últimos 20 días naturales -> últimos
-             10 días hábiles) - fuente principal, sin límite de cuota extra
-             ya que usa el mismo cliente de datos que el resto del bot.
-          2. Twelve Data (respaldo) - si Alpaca no devuelve datos.
-
-        `avg_daily_volume` se acepta por compatibilidad hacia atrás pero
-        ya no se usa como fuente (antes venía de Yahoo).
+        RVOL session-aware (compatibilidad hacia atrás).
+        Equivale a get_volume_metrics(symbol)["rvol_session"].
         """
+        metrics = self.get_volume_metrics(symbol)
+        return metrics.get("rvol_session")
+
+    def get_volume_metrics(self, symbol: str) -> dict:
+        """
+        Métricas de volumen separadas (V7.2):
+
+          rvol_daily   — volumen de HOY (barra diaria) / promedio 10 días.
+                         Útil para gap & go de sesión completa.
+          rvol_session — volumen acumulado intradía / esperado a esta hora
+                         (normalizado a fracción de sesión). Mejor para scalping.
+          float_turnover — volumen acumulado hoy / float shares.
+                           Mide qué % del float ya se negoció (presión real).
+          today_volume, avg_volume_10d, float_shares (auxiliares).
+        """
+        out = {
+            "rvol_daily": None,
+            "rvol_session": None,
+            "float_turnover": None,
+            "today_volume": None,
+            "avg_volume_10d": None,
+            "float_shares": None,
+        }
+
         bars = self.get_bars(symbol, minutes_back=config.LOOKBACK_MINUTES_FALLBACK)
         if bars.empty or "volume" not in bars.columns:
-            return None
+            return out
+
         today_volume = float(bars["volume"].sum())
+        out["today_volume"] = today_volume
 
         avg_volume_10d = self._get_avg_daily_volume_alpaca(symbol)
         if avg_volume_10d is None:
             avg_volume_10d = self._get_avg_daily_volume_twelvedata(symbol)
+        out["avg_volume_10d"] = avg_volume_10d
 
-        if not avg_volume_10d or avg_volume_10d <= 0:
-            return None
+        if avg_volume_10d and avg_volume_10d > 0:
+            # RVOL diario (sin normalizar por hora): útil al cierre / full-day
+            out["rvol_daily"] = round(today_volume / avg_volume_10d, 2)
 
-        # Normalizamos el promedio diario a la fracción de sesión transcurrida
-        minutes_elapsed = min(len(bars), 390)  # sesión regular = 390 min
-        expected_volume_by_now = avg_volume_10d * (minutes_elapsed / 390)
-        if expected_volume_by_now <= 0:
-            return None
+            # RVOL session-aware: normalizado a fracción de sesión transcurrida
+            minutes_elapsed = min(len(bars), 390)
+            expected_volume_by_now = avg_volume_10d * (minutes_elapsed / 390)
+            if expected_volume_by_now > 0:
+                out["rvol_session"] = round(today_volume / expected_volume_by_now, 2)
 
-        return round(today_volume / expected_volume_by_now, 2)
+        # Float turnover
+        try:
+            fund = self.get_fundamentals(symbol)
+            float_shares = fund.get("float_shares") if fund else None
+            out["float_shares"] = float_shares
+            if float_shares and float_shares > 0:
+                out["float_turnover"] = round(today_volume / float_shares, 4)
+        except Exception:
+            pass
+
+        return out
 
     def _get_avg_daily_volume_alpaca(self, symbol: str):
         """Fuente principal del RVOL: barras diarias de Alpaca (últimos ~10 días hábiles)."""

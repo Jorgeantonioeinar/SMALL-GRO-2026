@@ -25,6 +25,12 @@ try:
 except ImportError:
     get_halt_engine = None
 
+try:
+    from short_volume import get_short_volume, classify_short_pressure
+except ImportError:
+    get_short_volume = None
+    classify_short_pressure = None
+
 logger = logging.getLogger("screener")
 
 
@@ -80,7 +86,7 @@ def compute_data_confidence(result: dict, pmh=None, has_prev_close: bool = True)
 
 
 def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
-    """Añade halt_status + data_confidence a cualquier resultado del screener."""
+    """Añade halt_status + short volume + data_confidence a cualquier resultado."""
     if get_halt_engine is not None:
         try:
             he = get_halt_engine()
@@ -98,6 +104,25 @@ def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
     if result["halted"]:
         result["signal"] = "DESCARTAR"
         result["notes"] = (result.get("notes") or []) + [f"HALT activo: {halt.get('reason')}"]
+
+    # FINRA Short Volume (contexto, no bloquea por sí solo)
+    if get_short_volume is not None:
+        try:
+            sv = get_short_volume(result.get("symbol", ""))
+            result["short_pct"] = sv.get("short_pct")
+            result["short_volume"] = sv.get("short_volume")
+            result["short_date"] = sv.get("date")
+            if classify_short_pressure is not None:
+                result["short_pressure"] = classify_short_pressure(sv.get("short_pct"))
+            else:
+                result["short_pressure"] = "N/D"
+        except Exception as e:
+            logger.warning(f"ShortVolume falló para {result.get('symbol')}: {e}")
+            result["short_pct"] = None
+            result["short_pressure"] = "N/D"
+    else:
+        result["short_pct"] = None
+        result["short_pressure"] = "N/D"
 
     conf = compute_data_confidence(result, pmh=pmh, has_prev_close=result.get("gap_pct") is not None)
     result.update(conf)
@@ -382,6 +407,17 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     elif premarket_volume and float_shares:
         structural_rvol = round(premarket_volume / float_shares, 2)
 
+    # Métricas de volumen separadas (V7.2)
+    try:
+        vol_metrics = fetcher.get_volume_metrics(symbol)
+    except Exception:
+        vol_metrics = {}
+    rvol_daily = vol_metrics.get("rvol_daily")
+    rvol_session = vol_metrics.get("rvol_session")
+    float_turnover = vol_metrics.get("float_turnover")
+    if float_turnover is None and premarket_volume and float_shares:
+        float_turnover = round(premarket_volume / float_shares, 4)
+
     # --- Entry Score / Chase Status (separado del Quality Score de arriba) ---
     # "score" (verdict["score"]) responde "¿qué tan bueno es este candidato?"
     # Esto responde "¿es buen MOMENTO para entrar ahora mismo?" — un ticker
@@ -399,6 +435,9 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
         "price": price,
         "gap_pct": verdict["gap_pct"],
         "rvol": structural_rvol,
+        "rvol_daily": rvol_daily,
+        "rvol_session": rvol_session,
+        "float_turnover": float_turnover,
         "float_shares": float_shares,
         "rsi": compute_rsi(bars),
         "atr": compute_atr(bars),
@@ -476,12 +515,18 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
         else:
             result["notes"].append(f"Gap insuficiente ({gap_pct}% < {config.GAP_MIN_PCT}%)")
 
-    # --- 2) RVOL (override manual tiene prioridad) ---
+    # --- 2) RVOL separado (V7.2): session / daily / float_turnover ---
+    vol_metrics = fetcher.get_volume_metrics(symbol)
+    result["rvol_daily"] = vol_metrics.get("rvol_daily")
+    result["rvol_session"] = vol_metrics.get("rvol_session")
+    result["float_turnover"] = vol_metrics.get("float_turnover")
+
     if rvol_override is not None:
         rvol = rvol_override
         result["notes"].append("RVOL puesto a mano (override manual)")
     else:
-        rvol = fetcher.get_relative_volume(symbol)
+        # Preferimos session-aware para scalping; si no hay, daily
+        rvol = vol_metrics.get("rvol_session") or vol_metrics.get("rvol_daily")
     result["rvol"] = rvol
     if rvol is not None:
         if rvol >= config.RVOL_MIN:

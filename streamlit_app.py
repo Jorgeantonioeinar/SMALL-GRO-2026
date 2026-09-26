@@ -317,13 +317,22 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         df["data_quality"] = None
     if "halted" not in df.columns:
         df["halted"] = False
+    if "short_pressure" not in df.columns:
+        df["short_pressure"] = None
+    if "rvol_session" not in df.columns:
+        df["rvol_session"] = None
+
+    # Preferir RVOL session-aware (scalping); fallback al rvol clásico
+    if "rvol_session" in df.columns:
+        df["rvol_display"] = df["rvol_session"].where(df["rvol_session"].notna(), df.get("rvol"))
+    else:
+        df["rvol_display"] = df.get("rvol")
 
     cols = [
-        "symbol", "price", "gap_pct", "rvol", "float_shares", "rsi",
+        "symbol", "price", "gap_pct", "rvol_display", "float_shares", "rsi",
         "score", "entry_score", "chase_status", "dilution_risk",
-        "data_confidence", "halted", "signal",
+        "short_pressure", "data_confidence", "halted", "signal",
     ]
-    # Solo usar columnas que existan
     cols = [c for c in cols if c in df.columns]
     df_display = df[cols].copy()
     if "float_shares" in df_display.columns:
@@ -335,13 +344,14 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "symbol": "Ticker",
         "price": "Precio",
         "gap_pct": "Gap %",
-        "rvol": "RVOL",
+        "rvol_display": "RVOL",
         "float_shares": "Float (M)",
         "rsi": "RSI",
         "score": "Quality",
         "entry_score": "Entry",
         "chase_status": "Estado",
         "dilution_risk": "Dilución",
+        "short_pressure": "Short",
         "data_confidence": "Confianza",
         "halted": "Halt",
         "signal": "Señal",
@@ -361,6 +371,13 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
 
     if "Halt" in df_display.columns:
         df_display["Halt"] = df_display["Halt"].map(lambda v: "🔴 SÍ" if v else "🟢 No")
+
+    short_emoji = {
+        "BAJO": "🟢 Bajo", "NORMAL": "🟡 Normal", "ALTO": "🟠 Alto",
+        "MUY_ALTO": "🔴 Muy alto", "N/D": "⚪ N/D",
+    }
+    if "Short" in df_display.columns:
+        df_display["Short"] = df_display["Short"].map(lambda v: short_emoji.get(v, v) if v else "⚪ N/D")
 
     def resaltar_compra(row):
         # Verde solo si Quality Y Entry son buenos Y no está en halt Y confianza razonable
@@ -405,7 +422,8 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "🟢 Verde = Quality + Entry buenos + datos confiables · "
         "🟡 Amarillo = Quality bueno pero extendido o datos incompletos · "
         "🔴 Rojo = HALT activo (no operar) · "
-        "Confianza < 70 → el bot solo permite VIGILAR, no compra automática."
+        "Confianza < 70 → solo VIGILAR · "
+        "Short = % short volume FINRA (flujo off-exchange del día más reciente; contexto, no señal única)."
     )
 
 
