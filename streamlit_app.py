@@ -517,7 +517,7 @@ with tab_live:
             "Clásico: filtros probados en producción (float 1M-10M fijo). "
             "Smart: proporcional al tamaño real de la empresa (Float Market Cap, "
             "Market Cap Band, Float Turnover, RVOL Estructural). "
-            "Comparar ambos: corre los dos y los muestra lado a lado."
+            "Comparar ambos: corre los dos y los muestra apilados (Clásico arriba, Smart abajo) para ver todas las columnas."
         ),
     )
 
@@ -615,11 +615,11 @@ with tab_live:
         ranked_by_engine = st.session_state.get("ranked_by_engine", {"classic": st.session_state.ranked})
 
         if len(ranked_by_engine) == 2:
-            col_a, col_b = st.columns(2)
-            with col_a:
-                render_ranking_table(ranked_by_engine["classic"], title="🅰️ Motor Clásico", key_suffix="classic")
-            with col_b:
-                render_ranking_table(ranked_by_engine["smart"], title="🅱️ Motor Smart (proporcional)", key_suffix="smart")
+            # Apilados verticalmente: Clásico arriba, Smart abajo
+            # así se ven todas las columnas sin recortar en pantallas normales.
+            render_ranking_table(ranked_by_engine["classic"], title="🅰️ Motor Clásico", key_suffix="classic")
+            st.markdown("---")
+            render_ranking_table(ranked_by_engine["smart"], title="🅱️ Motor Smart (proporcional)", key_suffix="smart")
         else:
             engine_name = "🅰️ Motor Clásico" if "classic" in ranked_by_engine else "🅱️ Motor Smart (proporcional)"
             render_ranking_table(st.session_state.ranked, title=engine_name, key_suffix="single")
