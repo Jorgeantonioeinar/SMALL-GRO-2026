@@ -333,7 +333,7 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
     cols = [
         "symbol", "price", "gap_pct", "rvol_display", "float_shares", "rsi",
         "score", "entry_score", "chase_status", "dilution_risk",
-        "short_pressure", "data_confidence", "halted", "scalp_ready", "signal",
+        "short_pressure", "data_confidence", "halted", "scoring_session", "scalp_ready", "signal",
     ]
     cols = [c for c in cols if c in df.columns]
     df_display = df[cols].copy()
@@ -356,6 +356,7 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "short_pressure": "Short",
         "data_confidence": "Confianza",
         "halted": "Halt",
+        "scoring_session": "Sesión",
         "scalp_ready": "Scalp",
         "signal": "Señal",
     }
@@ -376,6 +377,9 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         df_display["Halt"] = df_display["Halt"].map(lambda v: "🔴 SÍ" if v else "🟢 No")
 
     scalp_emoji = {"LISTO": "🟢 LISTO", "VIGILAR": "🟡 VIGILAR", "NO": "🔴 NO"}
+    session_emoji = {"premarket": "🌅 PM", "regular": "🔔 REG", "afterhours": "🌙 AH"}
+    if "Sesión" in df_display.columns:
+        df_display["Sesión"] = df_display["Sesión"].map(lambda v: session_emoji.get(v, v) if v else "—")
     if "Scalp" in df_display.columns:
         df_display["Scalp"] = df_display["Scalp"].map(lambda v: scalp_emoji.get(v, v) if v else "⚪ N/D")
 
@@ -538,27 +542,50 @@ with tab_live:
         ),
     )
 
-    session_filter_label = st.radio(
-        "⏰ Filtro horario (hora NY)",
+    session_mode_label = st.radio(
+        "⏰ Sesión de scoring (hora NY)",
         [
-            "Sin filtro (todo el día)",
-            "Solo ventana fuerte 9:30–11:00 ET",
-            "Premarket + fuerte 4:00–11:00 ET",
+            "🔄 Auto (detecta premarket / regular / after-hours)",
+            "🌅 Premarket 4:00–9:30 (cazar gaps)",
+            "🔔 Regular 9:30–16:00 (gap & go clásico)",
+            "🌙 After-Hours 16:00–20:00 (spikes post-close)",
+            "Sin filtro horario",
         ],
         index=0,
         horizontal=True,
         help=(
-            "Fuera de la ventana elegida el bot no marca LISTO ni COMPRA_LARGO automática "
-            "(como máximo VIGILAR). Ideal para gap & go / scalping de primera hora."
+            "Cada sesión usa umbrales distintos (gap, RVOL, Quality/Entry para LISTO). "
+            "Premarket y After-Hours permiten cazar gaps con menos volumen pero más exigencia de score. "
+            "Auto = usa el reloj de Nueva York. Forzar sesión sirve para estudiar setups aunque el mercado esté cerrado."
         ),
-        key="session_filter_ui",
+        key="session_mode_ui",
     )
-    _sf_map = {
-        "Sin filtro (todo el día)": "off",
-        "Solo ventana fuerte 9:30–11:00 ET": "strong",
-        "Premarket + fuerte 4:00–11:00 ET": "premarket_strong",
+    _sm_map = {
+        "🔄 Auto (detecta premarket / regular / after-hours)": "auto",
+        "🌅 Premarket 4:00–9:30 (cazar gaps)": "premarket",
+        "🔔 Regular 9:30–16:00 (gap & go clásico)": "regular",
+        "🌙 After-Hours 16:00–20:00 (spikes post-close)": "afterhours",
+        "Sin filtro horario": "off",
     }
-    config._SESSION_FILTER_RUNTIME = _sf_map.get(session_filter_label, "off")
+    config._SESSION_MODE_RUNTIME = _sm_map.get(session_mode_label, "auto")
+    config._SESSION_FILTER_RUNTIME = config._SESSION_MODE_RUNTIME  # compat
+
+    # Badge de sesión actual (reloj NY)
+    try:
+        from strategy import get_current_session
+        _clock = get_current_session()
+        _clock_lbl = {"premarket": "🌅 Premarket", "regular": "🔔 Regular",
+                      "afterhours": "🌙 After-Hours", "closed": "⛔ Cerrado"}.get(_clock, _clock)
+        _prof = config.get_session_scoring_profile(
+            config._SESSION_MODE_RUNTIME if config._SESSION_MODE_RUNTIME in ("premarket", "regular", "afterhours")
+            else (_clock if _clock != "closed" else "regular")
+        )
+        st.caption(
+            f"Reloj NY ahora: **{_clock_lbl}** · Perfil de scoring activo: **{_prof.get('label')}** "
+            f"(Gap≥{_prof.get('gap_min_pct')}% · LISTO si Quality≥{_prof.get('score_min_listo')} y Entry≥{_prof.get('entry_min_listo')})"
+        )
+    except Exception:
+        pass
 
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
         with st.spinner("Analizando el mercado (TradingView/Finviz + Alpaca)..."):

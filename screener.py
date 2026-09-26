@@ -86,55 +86,52 @@ def compute_data_confidence(result: dict, pmh=None, has_prev_close: bool = True)
 
 
 
+
 def _parse_hhmm(s: str) -> tuple[int, int]:
     parts = (s or "00:00").strip().split(":")
     return int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
 
 
-def is_in_strong_session(now_et=None) -> bool:
-    """True si la hora actual (ET) está en la ventana fuerte de scalping."""
+def resolve_active_session(session_mode: str = "auto") -> str:
+    """
+    session_mode de la UI:
+      auto | premarket | regular | afterhours | off
+    Devuelve la sesión de scoring a usar: premarket | regular | afterhours
+    (si off → regular para umbrales, pero sin bloquear por hora).
+    """
+    mode = (session_mode or "auto").lower()
+    if mode in ("premarket", "regular", "afterhours"):
+        return mode
+    # auto u off: detectar reloj NY
     try:
-        from zoneinfo import ZoneInfo
-        from datetime import datetime
-        if now_et is None:
-            now_et = datetime.now(ZoneInfo("America/New_York"))
-        start_h, start_m = _parse_hhmm(getattr(config, "SESSION_STRONG_START", "09:30"))
-        end_h, end_m = _parse_hhmm(getattr(config, "SESSION_STRONG_END", "11:00"))
-        minutes = now_et.hour * 60 + now_et.minute
-        return (start_h * 60 + start_m) <= minutes < (end_h * 60 + end_m)
+        from strategy import get_current_session
+        sess = get_current_session()
+        if sess in ("premarket", "regular", "afterhours"):
+            return sess
     except Exception:
-        return True  # si falla TZ, no bloquear
+        pass
+    return "regular"
 
 
-def is_in_premarket_or_strong(now_et=None) -> bool:
+def is_clock_in_session(session: str) -> bool:
+    """True si el reloj NY está físicamente en esa sesión de bolsa."""
     try:
-        from zoneinfo import ZoneInfo
-        from datetime import datetime
-        if now_et is None:
-            now_et = datetime.now(ZoneInfo("America/New_York"))
-        pm_h, pm_m = _parse_hhmm(getattr(config, "SESSION_PREMARKET_START", "04:00"))
-        end_h, end_m = _parse_hhmm(getattr(config, "SESSION_STRONG_END", "11:00"))
-        minutes = now_et.hour * 60 + now_et.minute
-        return (pm_h * 60 + pm_m) <= minutes < (end_h * 60 + end_m)
+        from strategy import get_current_session
+        return get_current_session() == session
     except Exception:
         return True
 
 
-def compute_scalp_ready(result: dict, session_filter: str = "off") -> dict:
+def compute_scalp_ready(result: dict, session_mode: str = "off") -> dict:
     """
-    Señal unificada para scalping small caps.
+    Señal unificada LISTO / VIGILAR / NO según perfil de la sesión activa.
 
-    session_filter:
-      "off"              — no filtrar por hora
-      "strong"           — solo 9:30–11:00 ET
-      "premarket_strong" — 4:00–11:00 ET
-
-    Devuelve:
-      scalp_ready: "LISTO" | "VIGILAR" | "NO"
-      scalp_reasons: lista de textos cortos
-      in_session_window: bool
+    session_mode: auto | premarket | regular | afterhours | off
     """
     reasons = []
+    scoring_session = resolve_active_session(session_mode)
+    profile = config.get_session_scoring_profile(scoring_session)
+
     halted = bool(result.get("halted"))
     conf = result.get("data_confidence")
     try:
@@ -154,47 +151,75 @@ def compute_scalp_ready(result: dict, session_filter: str = "off") -> dict:
     chase = (result.get("chase_status") or "").upper()
     dil = (result.get("dilution_risk") or "").upper()
     signal = (result.get("signal") or "").upper()
+    gap = result.get("gap_pct")
+    try:
+        gap = float(gap) if gap is not None else None
+    except Exception:
+        gap = None
 
-    conf_min = getattr(config, "DATA_CONFIDENCE_MIN_FOR_BUY", 70)
-    q_min = getattr(config, "SCORE_MIN_TO_BUY", 9.0)
-    e_min = getattr(config, "ENTRY_SCORE_MIN_FOR_READY", 7.0)
+    q_min = float(profile.get("score_min_listo", getattr(config, "SCORE_MIN_TO_BUY", 9.0)))
+    e_min = float(profile.get("entry_min_listo", getattr(config, "ENTRY_SCORE_MIN_FOR_READY", 7.0)))
+    conf_min = float(profile.get("confidence_min", getattr(config, "DATA_CONFIDENCE_MIN_FOR_BUY", 70)))
+    gap_min = float(profile.get("gap_min_pct", getattr(config, "GAP_MIN_PCT", 15.0)))
 
-    # Ventana horaria
-    in_window = True
-    if session_filter == "strong":
-        in_window = is_in_strong_session()
-    elif session_filter == "premarket_strong":
-        in_window = is_in_premarket_or_strong()
+    # ¿El reloj coincide con la sesión de scoring?
+    # - mode off: no bloquear por hora
+    # - mode auto: sesión = reloj; siempre "en ventana" si no closed
+    # - mode forzado (premarket/regular/afterhours): LISTO solo si el reloj está en esa sesión
+    #   (permite estudiar premarket en fin de semana como VIGILAR, no LISTO falso)
+    mode = (session_mode or "off").lower()
+    if mode == "off":
+        in_window = True
+    elif mode == "auto":
+        try:
+            from strategy import get_current_session
+            in_window = get_current_session() in ("premarket", "regular", "afterhours")
+        except Exception:
+            in_window = True
+    else:
+        in_window = is_clock_in_session(scoring_session)
+
+    result_meta = {
+        "scoring_session": scoring_session,
+        "session_label": profile.get("label", scoring_session),
+        "in_session_window": in_window,
+    }
 
     if halted:
-        return {"scalp_ready": "NO", "scalp_reasons": ["HALT"], "in_session_window": in_window}
+        return {"scalp_ready": "NO", "scalp_reasons": ["HALT"], **result_meta}
     if signal in ("DESCARTAR", "SIN COBERTURA"):
-        reasons.append(signal)
-        return {"scalp_ready": "NO", "scalp_reasons": reasons or ["DESCARTAR"], "in_session_window": in_window}
+        return {"scalp_ready": "NO", "scalp_reasons": [signal], **result_meta}
     if dil in ("ALTO", "HIGH"):
-        return {"scalp_ready": "NO", "scalp_reasons": ["Dilución ALTA"], "in_session_window": in_window}
+        return {"scalp_ready": "NO", "scalp_reasons": ["Dilución ALTA"], **result_meta}
     if chase in ("NO_CHASE", "MUY_EXTENDIDO"):
-        return {"scalp_ready": "NO", "scalp_reasons": [f"Estado {chase}"], "in_session_window": in_window}
+        return {"scalp_ready": "NO", "scalp_reasons": [f"Estado {chase}"], **result_meta}
     if conf is not None and conf < conf_min:
-        return {"scalp_ready": "NO", "scalp_reasons": [f"Confianza {conf:.0f}<{conf_min}"], "in_session_window": in_window}
+        return {"scalp_ready": "NO", "scalp_reasons": [f"Confianza {conf:.0f}<{conf_min:.0f}"], **result_meta}
 
-    # Fuera de ventana → como máximo VIGILAR (nunca LISTO automático)
-    if session_filter != "off" and not in_window:
-        reasons.append("Fuera de ventana horaria")
+    # Fuera de la sesión forzada / mercado cerrado → no LISTO
+    if mode != "off" and not in_window:
+        reasons.append(f"Fuera de {profile.get('label', scoring_session)}")
         if quality >= q_min - 2:
-            return {"scalp_ready": "VIGILAR", "scalp_reasons": reasons, "in_session_window": False}
-        return {"scalp_ready": "NO", "scalp_reasons": reasons, "in_session_window": False}
+            return {"scalp_ready": "VIGILAR", "scalp_reasons": reasons, **result_meta}
+        return {"scalp_ready": "NO", "scalp_reasons": reasons, **result_meta}
+
+    # Gap: en premarket/AH un gap decente ayuda a LISTO; no es veto absoluto si Quality alto
+    gap_ok = gap is None or gap >= gap_min or gap >= (gap_min * 0.6)
 
     hard_ok = (
         quality >= q_min
         and entry is not None and entry >= e_min
         and chase in ("NORMAL", "", "SIN_DATOS")
         and (conf is None or conf >= conf_min)
+        and gap_ok
     )
     if hard_ok:
-        return {"scalp_ready": "LISTO", "scalp_reasons": ["Quality+Entry+NORMAL"], "in_session_window": in_window}
+        return {
+            "scalp_ready": "LISTO",
+            "scalp_reasons": [f"{scoring_session}: Q+Entry+NORMAL"],
+            **result_meta,
+        }
 
-    # Casi listo
     soft_ok = quality >= (q_min - 2) or (entry is not None and entry >= e_min - 1)
     if soft_ok or chase == "EXTENDIDO" or signal == "VIGILAR":
         if chase == "EXTENDIDO":
@@ -202,10 +227,12 @@ def compute_scalp_ready(result: dict, session_filter: str = "off") -> dict:
         if quality < q_min:
             reasons.append(f"Quality {quality:.1f}<{q_min}")
         if entry is None or entry < e_min:
-            reasons.append(f"Entry bajo")
-        return {"scalp_ready": "VIGILAR", "scalp_reasons": reasons or ["Casi listo"], "in_session_window": in_window}
+            reasons.append("Entry bajo")
+        if gap is not None and gap < gap_min:
+            reasons.append(f"Gap {gap:.1f}%<{gap_min}")
+        return {"scalp_ready": "VIGILAR", "scalp_reasons": reasons or ["Casi listo"], **result_meta}
 
-    return {"scalp_ready": "NO", "scalp_reasons": reasons or ["Score insuficiente"], "in_session_window": in_window}
+    return {"scalp_ready": "NO", "scalp_reasons": reasons or ["Score insuficiente"], **result_meta}
 
 
 def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
@@ -255,17 +282,22 @@ def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
         result["signal"] = "VIGILAR"
         result["notes"] = (result.get("notes") or []) + ["Data confidence LOW → solo vigilancia"]
 
-    # Señal unificada "Listo para scalpear" (usa filtro de sesión de session_state vía config runtime)
-    session_filter = getattr(config, "_SESSION_FILTER_RUNTIME", "off")
-    scalp = compute_scalp_ready(result, session_filter=session_filter)
+    # Señal unificada + perfil de sesión (premarket / regular / afterhours)
+    session_mode = getattr(config, "_SESSION_MODE_RUNTIME", getattr(config, "_SESSION_FILTER_RUNTIME", "off"))
+    # map legacy filter values
+    legacy = {"strong": "regular", "premarket_strong": "premarket"}
+    session_mode = legacy.get(session_mode, session_mode)
+    scalp = compute_scalp_ready(result, session_mode=session_mode)
     result["scalp_ready"] = scalp["scalp_ready"]
     result["scalp_reasons"] = scalp.get("scalp_reasons") or []
     result["in_session_window"] = scalp.get("in_session_window", True)
+    result["scoring_session"] = scalp.get("scoring_session", "regular")
+    result["session_label"] = scalp.get("session_label", "")
 
-    # Si filtro horario activo y fuera de ventana, no empujar COMPRA_LARGO
-    if session_filter != "off" and not result["in_session_window"] and result.get("signal") == "COMPRA_LARGO":
+    # Fuera de sesión activa (modo auto/forzado): no COMPRA_LARGO automática
+    if session_mode not in ("off", None) and not result["in_session_window"] and result.get("signal") == "COMPRA_LARGO":
         result["signal"] = "VIGILAR"
-        result["notes"] = (result.get("notes") or []) + ["Fuera de ventana horaria de scalping"]
+        result["notes"] = (result.get("notes") or []) + [f"Fuera de sesión {result.get('session_label') or result.get('scoring_session')}"]
 
     return result
 
@@ -646,16 +678,29 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
 
     score = 0.0
 
-    # --- 1) Gap / momentum del día ---
+    # --- 1) Gap / momentum del día (umbral según sesión: PM / regular / AH) ---
     gap_pct = fetcher.get_premarket_change_pct(symbol)
     result["gap_pct"] = gap_pct
+    _sess_mode = getattr(config, "_SESSION_MODE_RUNTIME", "auto")
+    if _sess_mode in ("strong", "premarket_strong"):
+        _sess_mode = {"strong": "regular", "premarket_strong": "premarket"}.get(_sess_mode, _sess_mode)
+    try:
+        from screener import resolve_active_session  # self
+    except Exception:
+        pass
+    try:
+        _scoring_sess = resolve_active_session(_sess_mode)
+        _gap_min = float(config.get_session_scoring_profile(_scoring_sess).get("gap_min_pct", config.GAP_MIN_PCT))
+    except Exception:
+        _gap_min = config.GAP_MIN_PCT
+        _scoring_sess = "regular"
     if gap_pct is not None:
-        if gap_pct >= config.GAP_MIN_PCT:
-            # Escala: +15% -> 1.5pt, +30% -> 2.5pt, +50%+ -> 3.0pt (con techo)
-            gap_score = min(3.0, 1.0 + (gap_pct - config.GAP_MIN_PCT) / 20.0)
+        if gap_pct >= _gap_min:
+            # Escala relativa al umbral de sesión
+            gap_score = min(3.0, 1.0 + (gap_pct - _gap_min) / 20.0)
             score += gap_score
         else:
-            result["notes"].append(f"Gap insuficiente ({gap_pct}% < {config.GAP_MIN_PCT}%)")
+            result["notes"].append(f"Gap insuficiente ({gap_pct}% < {_gap_min}% [{_scoring_sess}])")
 
     # --- 2) RVOL separado (V7.2): session / daily / float_turnover ---
     vol_metrics = {}

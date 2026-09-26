@@ -392,12 +392,65 @@ HALT_ENGINE_ENABLED = True
 
 
 # ---------------------------------------------------------------------------
-# V7.3 — FILTRO HORARIO + SEÑAL "LISTO PARA SCALPEAR"
+# V7.4 — TRES PERFILES DE SCORING POR SESIÓN (Premarket / Regular / After-Hours)
 # ---------------------------------------------------------------------------
-# Ventana fuerte de gap & go / scalping (hora Nueva York).
-SESSION_FILTER_ENABLED_DEFAULT = False  # el usuario lo activa en la UI
-SESSION_STRONG_START = "09:30"   # apertura regular
-SESSION_STRONG_END = "11:00"     # fin de primera hora / ventana fuerte
+# Cada sesión de la bolsa US tiene liquidez, volumen y comportamiento distintos.
+# El scoring y la señal "LISTO" usan umbrales propios de la sesión activa.
+#
+# session_mode en UI / runtime:
+#   "auto"       — detecta premarket | regular | afterhours | closed con el reloj NY
+#   "premarket"  — fuerza reglas premarket (cazar gaps 4:00–9:30)
+#   "regular"    — fuerza reglas regular (9:30–16:00), sub-ventana fuerte 9:30–11:00
+#   "afterhours" — fuerza reglas AH (16:00–20:00)
+#   "off"        — sin filtro horario (usa umbrales "regular" pero no bloquea por hora)
+#
+SESSION_SCORING_PROFILES = {
+    "premarket": {
+        "label": "🌅 Premarket (4:00–9:30 ET)",
+        "gap_min_pct": 10.0,          # gaps más tempranos; 10% ya es interesante
+        "rvol_min": 2.0,              # volumen absoluto bajo; no exigir 5x de regular
+        "score_min_listo": 9.0,       # Quality mínimo para LISTO
+        "entry_min_listo": 6.5,       # Entry un poco más flexible (PMH/retest)
+        "confidence_min": 65,         # datos extended a veces incompletos en free
+        "prefer_float_turnover": True,
+        "notes": "Cazar gaps/spikes con menos volumen; tamaño de posición ya reducido en SESSION_RISK.",
+    },
+    "regular": {
+        "label": "🔔 Regular (9:30–16:00 ET)",
+        "gap_min_pct": 15.0,
+        "rvol_min": 3.0,
+        "score_min_listo": 9.0,
+        "entry_min_listo": 7.0,
+        "confidence_min": 70,
+        "prefer_float_turnover": False,
+        "strong_window_start": "09:30",
+        "strong_window_end": "11:00",
+        "notes": "Gap & go clásico; primera hora es la ventana más fuerte.",
+    },
+    "afterhours": {
+        "label": "🌙 After-Hours (16:00–20:00 ET)",
+        "gap_min_pct": 8.0,           # movimientos post-close / noticias
+        "rvol_min": 1.5,              # volumen AH es estructuralmente bajo
+        "score_min_listo": 9.3,       # más exigente: spreads anchos, menos liquidez
+        "entry_min_listo": 7.0,
+        "confidence_min": 65,
+        "prefer_float_turnover": True,
+        "notes": "Solo setups muy limpios; size pequeño (SESSION_RISK). Cuidado con spreads.",
+    },
+}
+
+# Compatibilidad V7.3
+SESSION_FILTER_ENABLED_DEFAULT = False
+SESSION_STRONG_START = "09:30"
+SESSION_STRONG_END = "11:00"
 SESSION_PREMARKET_START = "04:00"
-# Entry score mínimo para marcar LISTO (Quality ya usa SCORE_MIN_TO_BUY)
 ENTRY_SCORE_MIN_FOR_READY = 7.0
+
+
+def get_session_scoring_profile(session: str = None) -> dict:
+    """Umbrales de scoring según sesión. session: premarket|regular|afterhours."""
+    if session is None or session == "closed":
+        session = "regular"
+    if session not in SESSION_SCORING_PROFILES:
+        session = "regular"
+    return SESSION_SCORING_PROFILES[session]
