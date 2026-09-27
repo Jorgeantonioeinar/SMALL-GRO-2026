@@ -44,6 +44,17 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+st.sidebar.markdown(
+    """
+    **Checklist lunes (scalp)**  
+    1. Sesión **Auto** o **Premarket** 4:00–9:30  
+    2. Busca **Scalp = LISTO** (arriba de la tabla)  
+    3. Evita Halt / Dilución Alta / NO-CHASE  
+    4. Confirma en el chart antes de comprar  
+    """
+)
+
+
 # Marca entorno nube para que MarketDataManager no intente TWS local
 import os as _os_cloud
 if _os_cloud.getenv("STREAMLIT_SHARING_MODE") or _os_cloud.path.exists("/mount/src") or _os_cloud.path.exists("/home/appuser"):
@@ -324,6 +335,16 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         st.info("Sin candidatos para mostrar.")
         return
     df = pd.DataFrame(ranked_list)
+    # Prioridad visual: LISTO > VIGILAR > NO, luego Quality
+    if not df.empty and "scalp_ready" in df.columns:
+        _ord = {"LISTO": 0, "VIGILAR": 1, "NO": 2}
+        df = df.assign(
+            _sk=df["scalp_ready"].map(lambda x: _ord.get(x, 3))
+        ).sort_values(
+            by=["_sk", "score"] if "score" in df.columns else ["_sk"],
+            ascending=[True, False] if "score" in df.columns else [True],
+        ).drop(columns=["_sk"], errors="ignore")
+
 
     # "Sin cobertura" vs "Descartado": si NINGUNA fuente gratuita tiene ni
     # precio ni float para el ticker, no es lo mismo que evaluarlo y que

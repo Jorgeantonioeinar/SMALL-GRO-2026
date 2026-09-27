@@ -982,7 +982,7 @@ class DataFetcher:
                 msg_lower = msg.lower()
                 logger.info(f"[{symbol}] Twelve Data ({session_label}): {msg}")
                 if "run out of api credits" in msg_lower or "limit" in msg_lower:
-                    self._twelvedata_disabled_until = time.time() + 60
+                    self._twelvedata_disabled_until = time.time() + 120  # 2 min: menos spam, screening más rápido
                     logger.warning("Twelve Data alcanzó su límite de peticiones — se pausa 60s.")
                 return None
 

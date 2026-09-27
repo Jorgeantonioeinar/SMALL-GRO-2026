@@ -715,9 +715,10 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
 
     # --- Validaciones básicas de rango de precio ---
     if price is None:
-        result["notes"].append("Sin precio disponible")
-        result["signal"] = "DESCARTAR"
-        result["chase_status"] = "SIN_DATOS"
+        result["notes"].append("Sin precio disponible (ticker sin cobertura o OTC)")
+        result["signal"] = "SIN_COBERTURA"
+        result["chase_status"] = "Sin datos"
+        result["score"] = 0.0
         return _finalize_candidate(result, bars=bars)
     if not (config.PRICE_MIN <= price <= config.PRICE_MAX):
         result["notes"].append(f"Precio fuera de rango (${price})")
@@ -850,6 +851,26 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
     return _finalize_candidate(result, bars=bars)
 
 
+
+def _rank_key(r: dict):
+    """Prioridad para el lunes: LISTO primero, luego VIGILAR, luego score."""
+    scalp_order = {"LISTO": 0, "VIGILAR": 1, "NO": 2}.get(
+        (r.get("scalp_ready") or "NO"), 3
+    )
+    signal_order = {"COMPRA_LARGO": 0, "VIGILAR": 1, "DESCARTAR": 2, "SIN_COBERTURA": 3}.get(
+        (r.get("signal") or "DESCARTAR"), 4
+    )
+    try:
+        score = float(r.get("score") or 0)
+    except Exception:
+        score = 0.0
+    try:
+        entry = float(r.get("entry_score") or 0)
+    except Exception:
+        entry = 0.0
+    return (scalp_order, signal_order, -score, -entry)
+
+
 def rank_candidates(fetcher: DataFetcher, tickers=None):
     """
     Puntúa todos los tickers del universo y devuelve el top N ordenado.
@@ -874,7 +895,7 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
         except Exception as e:
             logger.warning(f"[{symbol}] Error calculando score: {e}")
 
-    results.sort(key=lambda r: r["score"], reverse=True)
+    results.sort(key=_rank_key)
     return results[: config.TOP_N_CANDIDATOS]
 
 
