@@ -36,6 +36,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Marca entorno nube para que MarketDataManager no intente TWS local
+import os as _os_cloud
+if _os_cloud.getenv("STREAMLIT_SHARING_MODE") or _os_cloud.path.exists("/mount/src") or _os_cloud.path.exists("/home/appuser"):
+    _os_cloud.environ["IS_STREAMLIT_CLOUD"] = "1"
+    _os_cloud.environ["IBKR_ENABLED"] = "false"
+
+
 # --- Fuente de datos activa (IBKR vs Alpaca failover) ---
 try:
     from market_data_manager import get_market_data_manager

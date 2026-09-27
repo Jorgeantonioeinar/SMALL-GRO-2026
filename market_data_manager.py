@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -31,6 +32,39 @@ from typing import Any, Optional
 import pandas as pd
 
 logger = logging.getLogger("market_data_manager")
+
+
+def is_local_tws_environment() -> bool:
+    """
+    True solo cuando tiene sentido intentar 127.0.0.1:7497.
+    En Streamlit Cloud / servidores remotos NUNCA hay TWS local.
+    """
+    # Explicit disable
+    if os.getenv("IBKR_ENABLED", "true").lower() in ("0", "false", "no"):
+        return False
+    # Streamlit Cloud / Linux containers typically set these
+    if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_SERVER_BASE_URL_PATH"):
+        return False
+    if os.getenv("HOSTNAME", "").endswith(".internal") and not Path("/.dockerenv").exists():
+        pass
+    # Streamlit Cloud sets STREAMLIT_RUNTIME or runs on non-desktop
+    markers = (
+        os.getenv("STREAMLIT_CLOUD"),
+        os.getenv("STREAMLIT_RUNTIME_ENV"),
+        os.getenv("IS_STREAMLIT_CLOUD"),
+    )
+    if any(markers):
+        return False
+    # If host is not loopback, skip
+    host = os.getenv("IBKR_HOST", "127.0.0.1")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return False
+    # Heuristic: cloud Linux without display
+    if os.path.exists("/home/appuser") or os.path.exists("/mount/src"):
+        # typical Streamlit Cloud paths
+        return False
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Estructura normalizada (misma para IBKR y Alpaca)
@@ -453,10 +487,10 @@ class MarketDataManager:
 
     def initialize(self) -> str:
         """
-        Conecta proveedores. Devuelve nombre del activo: 'ibkr' | 'alpaca' | 'none'.
-        Seguro de llamar varias veces.
+        Conecta proveedores. Devuelve 'ibkr' | 'alpaca' | 'none'.
+        Idempotente: en Streamlit no reintenta TWS en cada rerun.
         """
-        if self._initialized and self.active and self.active.is_connected():
+        if self._initialized:
             return self.active_name
 
         import config as cfg
@@ -475,18 +509,28 @@ class MarketDataManager:
             or os.getenv("IBKR_CONNECT_TIMEOUT", "3")
         )
 
+        # 1) Siempre preparar Alpaca (nube + local failover)
         self.fallback = AlpacaDataProvider()
-        self.fallback.connect()
+        alpaca_ok = self.fallback.connect()
 
-        self.primary = IBKRDataProvider(
-            host=host,
-            port=port,
-            client_id=client_id,
-            account=account,
-            connect_timeout=timeout,
-        )
-
-        if self.prefer_ibkr:
+        # 2) IBKR solo en entorno local con TWS posible
+        try_ibkr = self.prefer_ibkr and is_local_tws_environment()
+        if not try_ibkr:
+            logger.info(
+                "IBKR TWS omitido (entorno nube/remoto o IBKR_ENABLED=false). "
+                "Usando Alpaca / fuentes web."
+            )
+            self.primary = None
+            self.active = self.fallback if alpaca_ok else None
+            self.active_name = "alpaca" if self.active else "none"
+        else:
+            self.primary = IBKRDataProvider(
+                host=host,
+                port=port,
+                client_id=client_id,
+                account=account,
+                connect_timeout=timeout,
+            )
             logger.info(
                 f"Intentando IBKR TWS {host}:{port} (paper account {account})..."
             )
@@ -498,16 +542,13 @@ class MarketDataManager:
                 logger.warning(
                     "TWS inactivo o no alcanzable. Activando respaldo Alpaca..."
                 )
-                self.active = self.fallback if self.fallback.is_connected() else None
+                self.active = self.fallback if alpaca_ok else None
                 self.active_name = "alpaca" if self.active else "none"
-        else:
-            self.active = self.fallback if self.fallback.is_connected() else None
-            self.active_name = "alpaca" if self.active else "none"
 
         if self.active_name == "none":
             logger.warning(
-                "Ningún proveedor de market data conectado. "
-                "DataFetcher usará sus fuentes propias (Finviz/Yahoo/etc.)."
+                "Ningún proveedor MDM conectado. "
+                "DataFetcher usará Finviz/Yahoo/Twelve Data."
             )
 
         self._initialized = True
@@ -516,10 +557,20 @@ class MarketDataManager:
     def ensure(self) -> str:
         if not self._initialized:
             return self.initialize()
+        # En nube nunca reintentar IBKR
+        if self.active_name == "ibkr" and self.active and self.active.is_connected():
+            return self.active_name
+        if self.active_name == "alpaca":
+            return self.active_name
         if self.active and self.active.is_connected():
             return self.active_name
-        # Reintento IBKR si estaba en failover
-        if self.prefer_ibkr and self.primary and not self.primary.is_connected():
+        # Solo reintentar IBKR en entorno local (TWS pudo abrirse después)
+        if (
+            self.prefer_ibkr
+            and self.primary is not None
+            and is_local_tws_environment()
+            and not self.primary.is_connected()
+        ):
             if self.primary.connect():
                 self.active = self.primary
                 self.active_name = "ibkr"
@@ -533,8 +584,6 @@ class MarketDataManager:
             self.active = self.fallback
             self.active_name = "alpaca"
             return self.active_name
-        self.active = None
-        self.active_name = "none"
         return self.active_name
 
     def get_latest_price(self, symbol: str) -> Optional[float]:
