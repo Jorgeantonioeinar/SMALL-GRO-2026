@@ -27,6 +27,14 @@ depender del navegador, usa el workflow de GitHub Actions en paralelo.
 import pandas as pd
 import numpy as np
 import streamlit as st
+# --- Entorno: en la nube nunca forzar IBKR ---
+import os as _os
+_os.environ.setdefault("IBKR_FORCE", "false")
+if _os.path.exists("/mount/src") or _os.path.exists("/home/appuser") or _os.environ.get("STREAMLIT_SHARING_MODE"):
+    _os.environ["IS_STREAMLIT_CLOUD"] = "1"
+    _os.environ["IBKR_FORCE"] = "false"
+    _os.environ["IBKR_ENABLED"] = "false"
+
 
 # set_page_config debe ser el PRIMER comando de Streamlit del script.
 st.set_page_config(

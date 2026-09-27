@@ -36,34 +36,36 @@ logger = logging.getLogger("market_data_manager")
 
 def is_local_tws_environment() -> bool:
     """
-    True solo cuando tiene sentido intentar 127.0.0.1:7497.
-    En Streamlit Cloud / servidores remotos NUNCA hay TWS local.
+    IBKR TWS solo si el usuario lo fuerza explícitamente en local.
+
+    En Streamlit Cloud NUNCA debe intentarse 127.0.0.1 (no hay TWS).
+    En PC local: poner en .env  IBKR_FORCE=true  y tener TWS paper en 7497.
     """
-    # Explicit disable
-    if os.getenv("IBKR_ENABLED", "true").lower() in ("0", "false", "no"):
-        return False
-    # Streamlit Cloud / Linux containers typically set these
-    if os.getenv("STREAMLIT_SHARING_MODE") or os.getenv("STREAMLIT_SERVER_BASE_URL_PATH"):
-        return False
-    if os.getenv("HOSTNAME", "").endswith(".internal") and not Path("/.dockerenv").exists():
-        pass
-    # Streamlit Cloud sets STREAMLIT_RUNTIME or runs on non-desktop
-    markers = (
-        os.getenv("STREAMLIT_CLOUD"),
-        os.getenv("STREAMLIT_RUNTIME_ENV"),
+    force = os.getenv("IBKR_FORCE", "").lower() in ("1", "true", "yes")
+    enabled = os.getenv("IBKR_ENABLED", "true").lower() not in ("0", "false", "no")
+
+    # Señales típicas de Streamlit Cloud / contenedor remoto
+    cloud_signals = [
         os.getenv("IS_STREAMLIT_CLOUD"),
-    )
-    if any(markers):
+        os.getenv("STREAMLIT_SHARING_MODE"),
+        os.getenv("STREAMLIT_CLOUD"),
+        os.path.exists("/mount/src"),      # Streamlit Cloud repo mount
+        os.path.exists("/home/appuser"),  # usuario típico Streamlit Cloud
+    ]
+    if any(cloud_signals):
         return False
-    # If host is not loopback, skip
+
+    # Sin force explícito no intentamos TWS (evita spam en nube aunque falle la detección)
+    if not force:
+        return False
+    if not enabled:
+        return False
+
     host = os.getenv("IBKR_HOST", "127.0.0.1")
     if host not in ("127.0.0.1", "localhost", "::1"):
         return False
-    # Heuristic: cloud Linux without display
-    if os.path.exists("/home/appuser") or os.path.exists("/mount/src"):
-        # typical Streamlit Cloud paths
-        return False
     return True
+
 
 
 # ---------------------------------------------------------------------------
@@ -516,10 +518,7 @@ class MarketDataManager:
         # 2) IBKR solo en entorno local con TWS posible
         try_ibkr = self.prefer_ibkr and is_local_tws_environment()
         if not try_ibkr:
-            logger.info(
-                "IBKR TWS omitido (entorno nube/remoto o IBKR_ENABLED=false). "
-                "Usando Alpaca / fuentes web."
-            )
+            logger.info("Fuente de datos: Alpaca/web (IBKR TWS no activo en este entorno).")
             self.primary = None
             self.active = self.fallback if alpaca_ok else None
             self.active_name = "alpaca" if self.active else "none"
@@ -628,15 +627,21 @@ class MarketDataManager:
         }
 
 
-# Singleton de proceso
+# Singleton de proceso (un solo intento de init por worker de Streamlit)
 _manager: Optional[MarketDataManager] = None
 _manager_lock = threading.Lock()
+_init_done = False
 
 
 def get_market_data_manager(force_reinit: bool = False) -> MarketDataManager:
-    global _manager
+    global _manager, _init_done
     with _manager_lock:
+        if _manager is not None and _init_done and not force_reinit:
+            return _manager
         if _manager is None or force_reinit:
-            _manager = MarketDataManager(prefer_ibkr=True)
+            # En nube: prefer_ibkr=False para no tocar TWS nunca
+            prefer = is_local_tws_environment()
+            _manager = MarketDataManager(prefer_ibkr=prefer)
             _manager.initialize()
+            _init_done = True
         return _manager
