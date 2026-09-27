@@ -277,7 +277,7 @@ def _finalize_candidate(result: dict, bars=None, pmh=None) -> dict:
         pmh = result.pop("_pmh", None)
     else:
         result.pop("_pmh", None)
-    return _finalize_candidate(result, bars=bars, pmh=pmh)
+    return enrich_with_halt_and_confidence(result, bars=bars, pmh=pmh)
 
 
 def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
@@ -732,10 +732,6 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
     _sess_mode = getattr(config, "_SESSION_MODE_RUNTIME", "auto")
     if _sess_mode in ("strong", "premarket_strong"):
         _sess_mode = {"strong": "regular", "premarket_strong": "premarket"}.get(_sess_mode, _sess_mode)
-    try:
-        from screener import resolve_active_session  # self
-    except Exception:
-        pass
     try:
         _scoring_sess = resolve_active_session(_sess_mode)
         _gap_min = float(config.get_session_scoring_profile(_scoring_sess).get("gap_min_pct", config.GAP_MIN_PCT))
