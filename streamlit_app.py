@@ -391,6 +391,12 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "signal": "Señal",
     }
     df_display = df_display.rename(columns={k: v for k, v in rename_map.items() if k in df_display.columns})
+    # None / NaN → N/D (más claro que "None" de Python)
+    for _col in df_display.columns:
+        df_display[_col] = df_display[_col].apply(
+            lambda v: "N/D" if v is None or (isinstance(v, float) and pd.isna(v)) else v
+        )
+
 
     chase_emoji = {"NORMAL": "🟢 NORMAL", "EXTENDIDO": "🟡 EXTENDIDO",
                    "MUY_EXTENDIDO": "🟠 MUY EXTENDIDO", "NO_CHASE": "🔴 NO-CHASE",

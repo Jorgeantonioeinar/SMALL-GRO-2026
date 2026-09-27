@@ -235,6 +235,51 @@ def compute_scalp_ready(result: dict, session_mode: str = "off") -> dict:
     return {"scalp_ready": "NO", "scalp_reasons": reasons or ["Score insuficiente"], **result_meta}
 
 
+
+def _attach_entry_metrics(result: dict, bars) -> dict:
+    """RSI / Entry / Estado aunque el ticker se descarte (halt, float bajo, etc.)."""
+    try:
+        from strategy import (
+            get_premarket_high, compute_vwap, compute_entry_score,
+            classify_chase_risk, compute_extension_metrics,
+        )
+        if bars is None or getattr(bars, "empty", True):
+            result.setdefault("rsi", result.get("rsi"))
+            result.setdefault("entry_score", None)
+            result.setdefault("chase_status", "SIN_DATOS")
+            result.setdefault("atr", None)
+            return result
+        if result.get("rsi") is None:
+            result["rsi"] = compute_rsi(bars)
+        if result.get("atr") is None:
+            result["atr"] = compute_atr(bars)
+        pmh = get_premarket_high(bars)
+        vwap = compute_vwap(bars)
+        if result.get("entry_score") is None:
+            result["entry_score"] = compute_entry_score(bars, pmh, vwap)
+        if not result.get("chase_status"):
+            result["chase_status"] = classify_chase_risk(
+                compute_extension_metrics(bars, pmh, vwap)
+            )
+        result["_pmh"] = pmh
+        return result
+    except Exception as e:
+        logger.debug(f"entry metrics: {e}")
+        result.setdefault("entry_score", None)
+        result.setdefault("chase_status", "SIN_DATOS")
+        return result
+
+
+def _finalize_candidate(result: dict, bars=None, pmh=None) -> dict:
+    """Siempre: métricas de entrada + halt + short + confianza + scalp."""
+    result = _attach_entry_metrics(result, bars)
+    if pmh is None:
+        pmh = result.pop("_pmh", None)
+    else:
+        result.pop("_pmh", None)
+    return _finalize_candidate(result, bars=bars, pmh=pmh)
+
+
 def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
     """Añade halt_status + short volume + data_confidence a cualquier resultado."""
     if get_halt_engine is not None:
@@ -624,7 +669,7 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
         "signal": signal_map.get(verdict["signal"], "DESCARTAR"),
         "notes": verdict["reasons"] + [f"Float Market Cap: ${verdict['float_market_cap']:,.0f}"] if verdict.get("float_market_cap") else verdict["reasons"],
     }
-    return enrich_with_halt_and_confidence(result, bars=bars, pmh=pmh)
+    return _finalize_candidate(result, bars=bars, pmh=pmh)
 
 
 def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None):
@@ -671,10 +716,13 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
     # --- Validaciones básicas de rango de precio ---
     if price is None:
         result["notes"].append("Sin precio disponible")
-        return result
+        result["signal"] = "DESCARTAR"
+        result["chase_status"] = "SIN_DATOS"
+        return _finalize_candidate(result, bars=bars)
     if not (config.PRICE_MIN <= price <= config.PRICE_MAX):
         result["notes"].append(f"Precio fuera de rango (${price})")
-        return result
+        result["signal"] = "DESCARTAR"
+        return _finalize_candidate(result, bars=bars)
 
     score = 0.0
 
@@ -746,7 +794,8 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
             )
             result["score"] = 0.0
             result["signal"] = "DESCARTAR"
-            return result
+            # Igual calculamos RSI/Entry/Halt para no dejar la fila en None
+            return _finalize_candidate(result, bars=bars)
         elif float_shares > config.FLOAT_MAX_SHARES:
             result["notes"].append(f"Float alto ({float_shares:,.0f} > {config.FLOAT_MAX_SHARES:,.0f})")
         elif float_shares <= config.FLOAT_LOW_BONUS_SHARES:
@@ -790,7 +839,7 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
         result["notes"].append(dilution["reason"])
         result["score"] = 0.0
         result["signal"] = "DESCARTAR"
-        return result
+        return _finalize_candidate(result, bars=bars)
     if dilution["penalty_points"] > 0:
         score -= dilution["penalty_points"]
         result["notes"].append(dilution["reason"])
@@ -801,14 +850,8 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
         "VIGILAR" if score >= config.SCORE_MIN_TO_BUY - 2 else "DESCARTAR"
     )
 
-    # --- Entry Score / Chase Status (separado del Quality Score de arriba) ---
-    from strategy import get_premarket_high, compute_vwap, compute_entry_score, classify_chase_risk, compute_extension_metrics
-    pmh = get_premarket_high(bars)
-    vwap = compute_vwap(bars)
-    result["entry_score"] = compute_entry_score(bars, pmh, vwap)
-    result["chase_status"] = classify_chase_risk(compute_extension_metrics(bars, pmh, vwap))
-
-    return enrich_with_halt_and_confidence(result, bars=bars, pmh=pmh)
+    # Entry / Halt / Scalp (siempre, también si el score es bajo)
+    return _finalize_candidate(result, bars=bars)
 
 
 def rank_candidates(fetcher: DataFetcher, tickers=None):
