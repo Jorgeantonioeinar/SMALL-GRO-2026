@@ -454,3 +454,23 @@ def get_session_scoring_profile(session: str = None) -> dict:
     if session not in SESSION_SCORING_PROFILES:
         session = "regular"
     return SESSION_SCORING_PROFILES[session]
+
+# ---------------------------------------------------------------------------
+# TradeZero (ejecución opcional — NO market data)
+# ---------------------------------------------------------------------------
+TZ_API_KEY_ID = os.getenv("TZ_API_KEY_ID", "")
+TZ_API_SECRET_KEY = os.getenv("TZ_API_SECRET_KEY", "") or os.getenv("TZ_API_SECRET", "")
+TZ_ACCOUNT_ID = os.getenv("TZ_ACCOUNT_ID", "")
+
+
+# ---------------------------------------------------------------------------
+# Interactive Brokers TWS — fuente PRIMARIA de market data (solo si TWS está ON)
+# Paper: puerto 7497 | Live: 7496 (no usar live por defecto)
+# En Streamlit Cloud / sin TWS → failover automático a Alpaca (ver market_data_manager)
+# ---------------------------------------------------------------------------
+IBKR_HOST = os.getenv("IBKR_HOST", "127.0.0.1")
+IBKR_PORT = int(os.getenv("IBKR_PORT", "7497"))  # 7497 = paper TWS
+IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
+IBKR_ACCOUNT = os.getenv("IBKR_ACCOUNT", "DUR216049")  # paper
+IBKR_CONNECT_TIMEOUT = float(os.getenv("IBKR_CONNECT_TIMEOUT", "3"))
+IBKR_ENABLED = os.getenv("IBKR_ENABLED", "true").lower() in ("1", "true", "yes")

@@ -36,6 +36,21 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# --- Fuente de datos activa (IBKR vs Alpaca failover) ---
+try:
+    from market_data_manager import get_market_data_manager
+    _mdm = get_market_data_manager()
+    _src = _mdm.active_name
+    if _src == "ibkr":
+        st.sidebar.success("📡 Datos: IBKR TWS (primario)")
+    elif _src == "alpaca":
+        st.sidebar.info("📡 Datos: Alpaca (failover — TWS off o nube)")
+    else:
+        st.sidebar.warning("📡 Datos: fuentes web (Finviz/Yahoo) — sin IBKR/Alpaca")
+except Exception:
+    pass
+
+
 import config
 from data_fetcher import DataFetcher
 from screener import get_universe, rank_candidates, load_manual_tickers, add_manual_ticker

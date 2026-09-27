@@ -31,6 +31,13 @@ import config
 logger = logging.getLogger("data_fetcher")
 
 
+# Market data: IBKR TWS (primario local) → Alpaca (failover nube/sin TWS)
+try:
+    from market_data_manager import get_market_data_manager
+except Exception:
+    get_market_data_manager = None
+
+
 class DataFetcher:
     def __init__(self):
         if not config.ALPACA_API_KEY or not config.ALPACA_SECRET_KEY:
@@ -127,6 +134,22 @@ class DataFetcher:
     # ------------------------------------------------------------------
     def get_bars(self, symbol: str, minutes_back: int = 60, timeframe=TimeFrame.Minute):
         """Devuelve un DataFrame con barras recientes (OHLCV) de Alpaca."""
+        # Preferir barras IBKR (o Alpaca vía MDM) si el manager está activo
+        if get_market_data_manager is not None:
+            try:
+                mdm = get_market_data_manager()
+                minutes = 390
+                try:
+                    import config as _cfg
+                    minutes = int(getattr(_cfg, "LOOKBACK_MINUTES_FALLBACK", 390))
+                except Exception:
+                    pass
+                bdf = mdm.get_bars(symbol, minutes_back=minutes)
+                if bdf is not None and not bdf.empty:
+                    return bdf
+            except Exception as _mdm_e:
+                logger.debug(f"MDM bars skip {symbol}: {_mdm_e}")
+
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes_back * 2)  # margen extra
 
@@ -151,6 +174,16 @@ class DataFetcher:
             return pd.DataFrame()
 
     def get_latest_price(self, symbol: str):
+        # 1) IBKR TWS si está conectado; si no, el manager ya hizo failover a Alpaca
+        if get_market_data_manager is not None:
+            try:
+                mdm = get_market_data_manager()
+                px = mdm.get_latest_price(symbol)
+                if px is not None and px > 0:
+                    return float(px)
+            except Exception as _mdm_e:
+                logger.debug(f"MDM price skip {symbol}: {_mdm_e}")
+
         """
         Cadena de redundancia para el precio:
           1. WebSocket en tiempo real (si está conectado y el dato es reciente)
