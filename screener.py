@@ -573,10 +573,14 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     if not afterhours_volume:
         afterhours_volume = fetcher.get_afterhours_volume_twelvedata(symbol)
 
-    sentiment = fetcher.get_news_sentiment(symbol)
-    catalyst_verified = sentiment["score"] > 0.15 if sentiment else None
-
-    dilution = sec_shield.check_dilution_risk(symbol)
+    if getattr(config, "FAST_SCREENING", False):
+        sentiment = None
+        catalyst_verified = None
+        dilution = {"reason": "Fast mode", "risk_level": "DESCONOCIDO", "blocked": False, "penalty_points": 0}
+    else:
+        sentiment = fetcher.get_news_sentiment(symbol)
+        catalyst_verified = sentiment["score"] > 0.15 if sentiment else None
+        dilution = sec_shield.check_dilution_risk(symbol)
 
     # RVOL Estructural session-aware: en regular usamos el volumen acumulado
     # normal (bars["volume"].sum()); en premarket/after-hours, el volumen de
@@ -829,10 +833,13 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
         result["notes"].append(f"Penalización geográfica: sede en {country} (-{config.GEOGRAPHIC_PENALTY_POINTS} pts)")
 
     # --- 6) SEC EDGAR Anti-Offering Shield (dilución) ---
-    dilution = sec_shield.check_dilution_risk(symbol)
+    if getattr(config, "FAST_SCREENING", False):
+        dilution = {"reason": "Fast mode (SEC omitido)", "risk_level": "DESCONOCIDO", "blocked": False, "penalty_points": 0}
+    else:
+        dilution = sec_shield.check_dilution_risk(symbol)
     result["dilution_reason"] = dilution["reason"]
     result["dilution_risk"] = dilution["risk_level"]
-    if dilution["blocked"]:
+    if dilution.get("blocked"):  # FAST_SCREENING dilution skip
         result["notes"].append(dilution["reason"])
         result["score"] = 0.0
         result["signal"] = "DESCARTAR"
@@ -881,19 +888,35 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
     if tickers is None:
         tickers = get_universe()
 
-    results = []
-    for entry in tickers:
+    def _one(entry):
         if isinstance(entry, str):
             symbol, float_override, rvol_override = entry, None, None
         else:
             symbol = entry["symbol"]
             float_override = entry.get("float_override")
             rvol_override = entry.get("rvol_override")
-
         try:
-            results.append(score_candidate(symbol, fetcher, float_override, rvol_override))
+            return score_candidate(symbol, fetcher, float_override, rvol_override)
         except Exception as e:
             logger.warning(f"[{symbol}] Error calculando score: {e}")
+            return None
+
+    results = []
+    use_parallel = getattr(config, "FAST_SCREENING", False) and len(tickers) > 3
+    if use_parallel:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        workers = int(getattr(config, "FAST_SCREENING_WORKERS", 6) or 6)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_one, e) for e in tickers]
+            for f in as_completed(futs):
+                r = f.result()
+                if r is not None:
+                    results.append(r)
+    else:
+        for entry in tickers:
+            r = _one(entry)
+            if r is not None:
+                results.append(r)
 
     results.sort(key=_rank_key)
     return results[: config.TOP_N_CANDIDATOS]

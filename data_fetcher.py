@@ -1003,6 +1003,9 @@ class DataFetcher:
             return None
 
     def get_premarket_volume_twelvedata(self, symbol: str):
+        if getattr(config, "FAST_SCREENING", False):
+            return None
+
         """
         Respaldo de volumen premarket (4:00-9:30 AM hora NY) usando Twelve
         Data, para cuando Alpaca/IEX no tiene datos de esa ventana (IEX no
@@ -1012,6 +1015,9 @@ class DataFetcher:
         return self._get_session_volume_twelvedata(symbol, "04:00:00", "09:30:00", "premarket")
 
     def get_afterhours_volume_twelvedata(self, symbol: str):
+        if getattr(config, "FAST_SCREENING", False):
+            return None
+
         """
         Respaldo de volumen after-hours (4:00-8:00 PM hora NY) usando
         Twelve Data — mismo problema estructural que premarket: IEX

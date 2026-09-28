@@ -154,8 +154,8 @@ GAP_MIN_PCT = 15.0          # variación mínima pre-market / del día (%)
 PREMARKET_VOLUME_MIN = 500_000
 
 FLOAT_MIN_SHARES = 1_000_000      # por debajo de esto: demasiado ilíquido/manipulable, se descarta
-FLOAT_MAX_SHARES = 10_000_000     # float máximo aceptado (antes 20M)
-FLOAT_LOW_BONUS_SHARES = 8_000_000   # por debajo de esto, bonus de score
+FLOAT_MAX_SHARES = 12_000_000     # float máximo aceptado (V7.6.6: más flexible, era 10M)
+FLOAT_LOW_BONUS_SHARES = 12_000_000  # por debajo de esto, bonus de score (era 8M)
 
 RVOL_MIN = 3.0               # volumen relativo mínimo para considerar el ticker
 
@@ -474,3 +474,12 @@ IBKR_CLIENT_ID = int(os.getenv("IBKR_CLIENT_ID", "1"))
 IBKR_ACCOUNT = os.getenv("IBKR_ACCOUNT", "DUR216049")  # paper
 IBKR_CONNECT_TIMEOUT = float(os.getenv("IBKR_CONNECT_TIMEOUT", "3"))
 IBKR_ENABLED = os.getenv("IBKR_ENABLED", "true").lower() in ("1", "true", "yes")
+
+
+# ---------------------------------------------------------------------------
+# Screening modes (V7.6.5)
+# ---------------------------------------------------------------------------
+# Completo: Twelve Data PM/AH, SEC dilution, sentiment (más lento, más datos)
+# Rápido: sin Twelve Data ni SEC/news; prioritiza precio/gap/RVOL/float en caché
+FAST_SCREENING = False  # se sobreescribe en runtime desde la UI
+FAST_SCREENING_WORKERS = 6  # paralelismo en modo rápido

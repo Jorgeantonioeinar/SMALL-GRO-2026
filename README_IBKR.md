@@ -46,3 +46,22 @@ python -c "from market_data_manager import get_market_data_manager; m=get_market
 ## GitHub / Streamlit Cloud
 
 El mismo código se sube a GitHub. En la nube **siempre** hará failover (no hay TWS). El screening, Halt, Short, Scalp LISTO siguen funcionando con Alpaca/Finviz.
+
+
+## Scanner nativo IBKR (solo PC)
+
+Con TWS paper abierto y en `.env`:
+
+```env
+IBKR_FORCE=true
+IBKR_PORT=7497
+IBKR_ACCOUNT=DUR216049
+```
+
+Al pulsar **Ejecutar Screening**, el bot intenta en este orden:
+
+1. **IBKR** `TOP_PERC_GAIN` (si TWS conectado)
+2. TradingView
+3. Finviz
+
+En Streamlit Cloud el paso 1 se omite solo.

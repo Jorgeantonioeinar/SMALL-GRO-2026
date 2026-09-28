@@ -412,11 +412,17 @@ def render_ranking_table(ranked_list, title=None, key_suffix=""):
         "signal": "Señal",
     }
     df_display = df_display.rename(columns={k: v for k, v in rename_map.items() if k in df_display.columns})
-    # None / NaN → N/D (más claro que "None" de Python)
+    # NO convertir columnas numéricas a "N/D" (rompe st.column_config.NumberColumn).
+    # Solo textos: None/NaN → cadena vacía o N/D en columnas de texto.
+    _numeric_cols = {"Precio", "Gap %", "RVOL", "Float (M)", "RSI", "Quality", "Entry", "Confianza"}
+    _text_cols = {"Ticker", "Estado", "Dilución", "Short", "Halt", "Sesión", "Scalp", "Señal"}
     for _col in df_display.columns:
-        df_display[_col] = df_display[_col].apply(
-            lambda v: "N/D" if v is None or (isinstance(v, float) and pd.isna(v)) else v
-        )
+        if _col in _numeric_cols:
+            df_display[_col] = pd.to_numeric(df_display[_col], errors="coerce")
+        elif _col in _text_cols:
+            df_display[_col] = df_display[_col].apply(
+                lambda v: "N/D" if v is None or (isinstance(v, float) and pd.isna(v)) or v == "" else v
+            )
 
 
     chase_emoji = {"NORMAL": "🟢 NORMAL", "EXTENDIDO": "🟡 EXTENDIDO",
@@ -644,8 +650,53 @@ with tab_live:
     except Exception:
         pass
 
+    velocidad_screening = st.radio(
+        "⚡ Velocidad de screening",
+        [
+            "🐢 Completo (más datos: TD + SEC + Top 30)",
+            "⚡ Rápido (sin Twelve Data/SEC, paralelo — ideal scalp)",
+        ],
+        horizontal=True,
+        help="Rápido: suele bajar de 40–90s a ~10–25s. Completo: más métricas, más lento.",
+    )
+    config.FAST_SCREENING = velocidad_screening.startswith("⚡")
+
+    with st.expander("📷 Importar tickers desde Trade Ideas / texto o captura"):
+        st.caption(
+            "Pega filas copiadas del scanner (Ctrl+C en Trade Ideas) o sube una captura. "
+            "OCR solo si tienes pytesseract en el PC; en la nube suele bastar pegar texto."
+        )
+        pasted = st.text_area("Pegar texto del scanner", height=100, placeholder="GYGY\nCLRO\nMIMI\nWBUY...")
+        up = st.file_uploader("Captura de pantalla (opcional)", type=["png", "jpg", "jpeg", "webp"])
+        if st.button("➕ Cargar tickers al watchlist manual"):
+            from ticker_from_text import extract_tickers, ocr_image_to_text
+            blob = pasted or ""
+            if up is not None:
+                ocr = ocr_image_to_text(up.getvalue())
+                if ocr:
+                    blob += "\n" + ocr
+                    st.info("OCR leyó texto de la imagen (revisa la lista).")
+                else:
+                    st.warning(
+                        "No se pudo hacer OCR de la imagen (normal en Streamlit Cloud). "
+                        "Copia/pega los símbolos desde Trade Ideas en el cuadro de texto."
+                    )
+            syms = extract_tickers(blob)
+            if not syms:
+                st.error("No se detectaron tickers. Pega texto con símbolos en mayúsculas.")
+            else:
+                for s in syms:
+                    try:
+                        add_manual_ticker(s)
+                    except Exception:
+                        pass
+                st.success(f"Añadidos/actualizados: {', '.join(syms[:25])}" + ("…" if len(syms) > 25 else ""))
+                st.rerun()
+
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
-        with st.spinner("Analizando el mercado (TradingView/Finviz + Alpaca)..."):
+
+        _spin = "⚡ Screening RÁPIDO..." if config.FAST_SCREENING else "🐢 Screening COMPLETO (más fuentes)..."
+        with st.spinner(_spin):
             if modo_screening.startswith("🔍"):
                 universe = get_top30_gappers_spikes()
                 if not universe:
