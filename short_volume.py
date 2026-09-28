@@ -42,6 +42,8 @@ UA = "Mozilla/5.0 (compatible; SmallCapsBot/7.2; +https://github.com)"
 _day_cache: dict[str, dict[str, dict]] = {}
 _day_cache_ts: dict[str, float] = {}
 _last_good_date: Optional[str] = None
+_failed_dates: dict[str, float] = {}  # date -> ts of last 403/fail
+_FAILED_TTL = 1800  # 30 min: no reintentar el mismo día fallido
 
 
 def _candidate_dates(max_lookback: int = 7) -> list[str]:
@@ -64,9 +66,15 @@ def _fetch_day(date_str: str) -> Optional[dict[str, dict]]:
         return _day_cache[date_str]
 
     url = CDN_TEMPLATE.format(date=date_str)
+    # No martillar el mismo día si ya dio 403/error
+    if date_str in _failed_dates and (time.time() - _failed_dates[date_str]) < _FAILED_TTL:
+        return None
     try:
-        resp = requests.get(url, timeout=20, headers={"User-Agent": UA})
-        if resp.status_code == 404:
+        resp = requests.get(url, timeout=12, headers={"User-Agent": UA})
+        if resp.status_code in (404, 403):
+            _failed_dates[date_str] = time.time()
+            if resp.status_code == 403:
+                logger.debug(f"ShortVolume FINRA {date_str}: {resp.status_code} (no reintentar 30min)")
             return None
         resp.raise_for_status()
         text = resp.text.strip()

@@ -316,10 +316,14 @@ def compute_ranked_with_engine_mode(fetcher, universe, mode):
     original_engine = config.SCORING_ENGINE
     results = {}
     try:
-        if mode in ("🅰️ Clásico", "🆚 Comparar ambos"):
+        # En Rápido, "Comparar ambos" solo corre Clásico (evita 2x tiempo)
+        effective = mode
+        if getattr(config, "FAST_SCREENING", False) and mode == "🆚 Comparar ambos":
+            effective = "🅰️ Clásico"
+        if effective in ("🅰️ Clásico", "🆚 Comparar ambos"):
             config.SCORING_ENGINE = "classic"
             results["classic"] = rank_candidates(fetcher, tickers=universe)
-        if mode in ("🅱️ Smart (proporcional)", "🆚 Comparar ambos"):
+        if effective in ("🅱️ Smart (proporcional)", "🆚 Comparar ambos"):
             config.SCORING_ENGINE = "smart"
             results["smart"] = rank_candidates(fetcher, tickers=universe)
     finally:
@@ -740,6 +744,8 @@ with tab_live:
             else:
                 universe = get_universe()
 
+            if universe and config.FAST_SCREENING and len(universe) > 15:
+                universe = universe[:15]
             ranked_by_engine = compute_ranked_with_engine_mode(fetcher, universe, motor_scoring) if universe else {}
             st.session_state.ranked_by_engine = ranked_by_engine
             # Compatibilidad con el resto del flujo (gráfico, compra, etc.):

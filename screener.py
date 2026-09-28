@@ -301,7 +301,7 @@ def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
         result["notes"] = (result.get("notes") or []) + [f"HALT activo: {halt.get('reason')}"]
 
     # FINRA Short Volume (contexto, no bloquea por sí solo)
-    if get_short_volume is not None:
+    if get_short_volume is not None and not getattr(config, "FAST_SCREENING", False):
         try:
             sv = get_short_volume(result.get("symbol", ""))
             result["short_pct"] = sv.get("short_pct")
