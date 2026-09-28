@@ -546,6 +546,8 @@ class DataFetcher:
 
     def _get_avg_daily_volume_twelvedata(self, symbol: str):
         """Respaldo del RVOL: Twelve Data, si Alpaca no devolvió nada."""
+        if getattr(config, "FAST_SCREENING", False):
+            return None
         if not config.TWELVE_DATA_API_KEY:
             return None
         try:
@@ -945,6 +947,10 @@ class DataFetcher:
         return today_ny
 
     def _get_session_volume_twelvedata(self, symbol: str, start_hms: str, end_hms: str, session_label: str):
+        # FAST_SCREENING hard skip TD session
+        if getattr(config, "FAST_SCREENING", False):
+            return None
+
         """
         Helper compartido: suma el volumen de Twelve Data entre `start_hms`
         y `end_hms` (hora NY) del último día hábil. Usado tanto por

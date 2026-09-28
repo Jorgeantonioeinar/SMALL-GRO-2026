@@ -657,7 +657,7 @@ with tab_live:
             "⚡ Rápido (sin Twelve Data/SEC, paralelo — ideal scalp)",
         ],
         horizontal=True,
-        help="Rápido: suele bajar de 40–90s a ~10–25s. Completo: más métricas, más lento.",
+        help="Rápido: SIN Twelve Data (evita pausas de 60s). Usa esto en scalp. Completo: más datos, más lento.",
     )
     config.FAST_SCREENING = velocidad_screening.startswith("⚡")
 
@@ -723,6 +723,9 @@ with tab_live:
         with st.spinner(_spin):
             if modo_screening.startswith("🔍"):
                 universe = get_top30_gappers_spikes()
+                # FAST top15: menos símbolos = menos Finviz en serie
+                if universe and config.FAST_SCREENING:
+                    universe = universe[:15]
                 if not universe:
                     st.warning(
                         "El escáner automático no devolvió resultados (mercado "

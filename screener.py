@@ -550,7 +550,7 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     # Respaldo: Alpaca/IEX no opera en premarket, así que lo anterior da
     # None casi siempre con el feed gratuito. Si es el caso, se intenta
     # Twelve Data como fuente alterna de volumen premarket.
-    if not premarket_volume:
+    if not premarket_volume and not getattr(config, "FAST_SCREENING", False):
         premarket_volume = fetcher.get_premarket_volume_twelvedata(symbol)
 
     # Volumen after-hours (4:00-8:00pm hora NY): mismo hueco estructural
@@ -570,7 +570,7 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
                 afterhours_volume = float(afterhours_bars["volume"].sum())
     except Exception:
         pass
-    if not afterhours_volume:
+    if not afterhours_volume and not getattr(config, "FAST_SCREENING", False):
         afterhours_volume = fetcher.get_afterhours_volume_twelvedata(symbol)
 
     if getattr(config, "FAST_SCREENING", False):
@@ -887,6 +887,9 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
     """
     if tickers is None:
         tickers = get_universe()
+
+    mode = "RÁPIDO" if getattr(config, "FAST_SCREENING", False) else "COMPLETO"
+    logger.info(f"rank_candidates: modo {mode}, {len(tickers)} símbolos")
 
     def _one(entry):
         if isinstance(entry, str):
