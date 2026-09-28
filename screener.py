@@ -417,7 +417,29 @@ def load_manual_tickers():
     return list(deduped.values())
 
 
+def replace_manual_watchlist(symbols: list) -> list:
+    """Reemplaza la watchlist manual completa (import Webull/Moomoo)."""
+    path = config.MANUAL_TICKERS_FILE
+    cleaned = []
+    seen = set()
+    for s in symbols or []:
+        t = (s or "").strip().upper()
+        t = t.split(".")[-1]
+        t = "".join(c for c in t if c.isalpha())
+        if len(t) < 2 or len(t) > 5 or t in seen:
+            continue
+        seen.add(t)
+        cleaned.append(t)
+    with open(path, "w") as f:
+        f.write("# Watchlist importada (Webull/Moomoo/texto)\n")
+        for t in cleaned:
+            f.write(t + "\n")
+    logger.info(f"Watchlist manual reemplazada: {len(cleaned)} símbolos")
+    return cleaned
+
+
 def add_manual_ticker(symbol: str, float_override=None, rvol_override=None):
+
     """Agrega un ticker (con overrides opcionales de float/RVOL) al archivo manual."""
     symbol = symbol.strip().upper()
     parts = [symbol]
@@ -467,7 +489,7 @@ def get_universe():
     manual_symbols = {e["symbol"] for e in manual_entries}
 
     combined = list(manual_entries)
-    for symbol in config.DEFAULT_WATCHLIST:
+    for symbol in (config.DEFAULT_WATCHLIST or []):
         if symbol not in manual_symbols:
             combined.append({"symbol": symbol, "float_override": None, "rvol_override": None})
     return combined

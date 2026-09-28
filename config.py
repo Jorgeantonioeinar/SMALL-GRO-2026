@@ -117,7 +117,7 @@ TIINGO_REST_BASE_URL = "https://api.tiingo.com"
 SCANNER_PRICE_MIN = 0.50
 SCANNER_PRICE_MAX = 30.0
 SCANNER_MAX_MARKET_CAP = 2_000_000_000   # $2B
-SCANNER_MIN_VOLUME = 500_000
+SCANNER_MIN_VOLUME = 500_000  # regular: mínimo razonable; Moomoo alineado a 500K
 SCANNER_MIN_CHANGE_PCT = 5.0
 
 FLOAT_CACHE_FILE = "float_cache.csv"       # caché local (símbolo, float, fecha)
@@ -140,7 +140,8 @@ MANUAL_TICKERS_FILE = "manual_tickers.txt"
 # mercado completo (plan gratuito). Puedes ampliarla con tus propios tickers
 # frecuentes de small caps.
 DEFAULT_WATCHLIST = [
-    "AAPL",  # ejemplo - reemplaza por tus small caps habituales
+    # Vacío a propósito: en Manual solo se usan tickers importados/pegados.
+    # (Antes tenía "AAPL" y en modo Manual salía solo Apple si el import fallaba.)
 ]
 
 
@@ -151,13 +152,13 @@ PRICE_MIN = 0.01
 PRICE_MAX = 30.0
 
 GAP_MIN_PCT = 15.0          # variación mínima pre-market / del día (%)
-PREMARKET_VOLUME_MIN = 500_000
+PREMARKET_VOLUME_MIN = 300_000  # PM: menos liquidez estructural; 300K evita perder gaps buenos
 
 FLOAT_MIN_SHARES = 1_000_000      # por debajo de esto: demasiado ilíquido/manipulable, se descarta
 FLOAT_MAX_SHARES = 12_000_000     # float máximo aceptado (V7.6.6: más flexible, era 10M)
 FLOAT_LOW_BONUS_SHARES = 12_000_000  # por debajo de esto, bonus de score (era 8M)
 
-RVOL_MIN = 3.0               # volumen relativo mínimo para considerar el ticker
+RVOL_MIN = 3.0               # baseline regular; perfiles por sesión pueden bajar/subir
 
 RSI_PERIOD = 14
 RSI_OVERBOUGHT = 80          # por encima de esto, penaliza (riesgo de "backside")
@@ -408,7 +409,7 @@ SESSION_SCORING_PROFILES = {
     "premarket": {
         "label": "🌅 Premarket (4:00–9:30 ET)",
         "gap_min_pct": 10.0,          # gaps más tempranos; 10% ya es interesante
-        "rvol_min": 2.0,              # volumen absoluto bajo; no exigir 5x de regular
+        "rvol_min": 2.0,              # PM: RVOL clásico moderado; prioriza float turnover
         "score_min_listo": 9.0,       # Quality mínimo para LISTO
         "entry_min_listo": 6.5,       # Entry un poco más flexible (PMH/retest)
         "confidence_min": 65,         # datos extended a veces incompletos en free
@@ -483,3 +484,24 @@ IBKR_ENABLED = os.getenv("IBKR_ENABLED", "true").lower() in ("1", "true", "yes")
 # Rápido: sin Twelve Data ni SEC/news; prioritiza precio/gap/RVOL/float en caché
 FAST_SCREENING = False  # se sobreescribe en runtime desde la UI
 FAST_SCREENING_WORKERS = 6  # paralelismo en modo rápido
+
+
+# ---------------------------------------------------------------------------
+# VOLUME_FILTERS_V76 — guía operativa (Moomoo + bot)
+# ---------------------------------------------------------------------------
+# Moomoo Regular (recomendado):
+#   Volume today >= 500K
+#   Turnover   >= 1M USD
+#   Volume Ratio (si existe) >= 3
+# Moomoo Premarket:
+#   Volume >= 200K–300K (no 500K o se vacía la lista)
+#   % Chg >= 8–10%
+# Moomoo After-Hours:
+#   Volume >= 200K, % Chg >= 5–8%, no exigir RVOL alto
+#
+# Bot (interno):
+#   PREMARKET_VOLUME_MIN = 300_000
+#   SCANNER_MIN_VOLUME   = 500_000  (regular)
+#   RVOL_MIN profiles: PM 2.0 | REG 3.0 | AH 1.5
+#   LISTO exige RVOL de sesión + gap + quality (no solo volumen crudo)
+VOLUME_FILTERS_V76 = True

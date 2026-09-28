@@ -79,7 +79,7 @@ except Exception:
 
 import config
 from data_fetcher import DataFetcher
-from screener import get_universe, rank_candidates, load_manual_tickers, add_manual_ticker
+from screener import get_universe, rank_candidates, load_manual_tickers, add_manual_ticker, replace_manual_watchlist
 from market_scanner import get_top30_gappers_spikes
 from strategy import check_orb_breakout, check_gap_and_go_retest, get_premarket_high, is_within_trading_window
 from execution import PositionManager
@@ -219,6 +219,11 @@ if st.sidebar.button("Agregar a la watchlist"):
 
 st.sidebar.subheader("Watchlist manual actual")
 current_manual = load_manual_tickers()
+if st.session_state.get("manual_watchlist"):
+    # prioriza la última importación en esta sesión (nube)
+    _ss = st.session_state["manual_watchlist"]
+    current_manual = [{"symbol": s, "float_override": None, "rvol_override": None} for s in _ss]
+
 if current_manual:
     for e in current_manual:
         extra = ""
@@ -708,15 +713,23 @@ with tab_live:
                     "Prueba: exportar CSV de Moomoo, o pegar solo símbolos (CLRO, MIMI, WBUY) uno por línea."
                 )
             else:
-                ok = []
-                for s in syms:
-                    try:
-                        add_manual_ticker(s)
-                        ok.append(s)
-                    except Exception as _e:
-                        pass
+                try:
+                    ok = replace_manual_watchlist(syms)
+                except Exception:
+                    ok = []
+                    for s in syms:
+                        try:
+                            add_manual_ticker(s)
+                            ok.append(s)
+                        except Exception:
+                            pass
+                st.session_state["manual_watchlist"] = list(ok)
                 if ok:
-                    st.success(f"Añadidos ({len(ok)}): {', '.join(ok[:30])}" + ("…" if len(ok) > 30 else ""))
+                    st.success(
+                        f"Watchlist lista ({len(ok)}): {', '.join(ok[:30])}"
+                        + ("…" if len(ok) > 30 else "")
+                        + " → Modo Manual + Calificar / Ejecutar Screening."
+                    )
                     st.rerun()
                 else:
                     st.error("Se detectaron símbolos pero no se pudieron guardar en la watchlist.")
@@ -742,7 +755,14 @@ with tab_live:
                         if e["symbol"] not in existentes:
                             universe.append(e)
             else:
-                universe = get_universe()
+                # Manual: SOLO watchlist (session o archivo). Sin DEFAULT AAPL.
+                mw = st.session_state.get("manual_watchlist")
+                if mw:
+                    universe = [{"symbol": s, "float_override": None, "rvol_override": None} for s in mw]
+                else:
+                    universe = load_manual_tickers()
+                if not universe:
+                    st.warning("Watchlist manual vacía. Pega Webull/Moomoo arriba y pulsa «Cargar tickers».")
 
             if universe and config.FAST_SCREENING and len(universe) > 15:
                 universe = universe[:15]
@@ -773,7 +793,17 @@ with tab_live:
         st.subheader("📌 Mis Tickers Manuales")
         if st.button("🔄 Calificar mis tickers manuales"):
             with st.spinner("Calificando tus tickers manuales..."):
-                st.session_state.manual_ranked = rank_candidates(fetcher, tickers=manual_entries_raw)
+                _tickers = manual_entries_raw
+                if st.session_state.get("manual_watchlist"):
+                    _tickers = [
+                        {"symbol": s, "float_override": None, "rvol_override": None}
+                        for s in st.session_state["manual_watchlist"]
+                    ]
+                if not _tickers:
+                    st.warning("No hay tickers en la watchlist. Usa «Cargar tickers» arriba con el pegado de Webull.")
+                else:
+                    st.caption(f"Calificando {len(_tickers)} símbolos…")
+                    st.session_state.manual_ranked = rank_candidates(fetcher, tickers=_tickers)
 
         if st.session_state.get("manual_ranked"):
             render_ranking_table(st.session_state.manual_ranked, key_suffix="manual")
