@@ -661,37 +661,61 @@ with tab_live:
     )
     config.FAST_SCREENING = velocidad_screening.startswith("⚡")
 
-    with st.expander("📷 Importar tickers desde Trade Ideas / texto o captura"):
+    with st.expander("📷 Importar tickers (Moomoo CSV / texto / captura)", expanded=True):
         st.caption(
-            "Pega filas copiadas del scanner (Ctrl+C en Trade Ideas) o sube una captura. "
-            "OCR solo si tienes pytesseract en el PC; en la nube suele bastar pegar texto."
+            "Recomendado: exporta CSV desde Moomoo o pega símbolos (uno por línea). "
+            "También acepta PNG/JPG (OCR solo en PC con Tesseract)."
         )
-        pasted = st.text_area("Pegar texto del scanner", height=100, placeholder="GYGY\nCLRO\nMIMI\nWBUY...")
-        up = st.file_uploader("Captura de pantalla (opcional)", type=["png", "jpg", "jpeg", "webp"])
-        if st.button("➕ Cargar tickers al watchlist manual"):
-            from ticker_from_text import extract_tickers, ocr_image_to_text
-            blob = pasted or ""
+        pasted = st.text_area(
+            "Pegar texto del scanner",
+            height=100,
+            placeholder="CLRO\nMIMI\nWBUY\nGYGY",
+            key="import_paste_tickers",
+        )
+        up = st.file_uploader(
+            "CSV Moomoo / Webull o imagen",
+            type=["csv", "txt", "png", "jpg", "jpeg", "webp"],
+            key="import_file_tickers",
+        )
+        if st.button("➕ Cargar tickers al watchlist manual", key="btn_import_tickers"):
+            from ticker_from_text import extract_tickers, extract_tickers_from_csv, ocr_image_to_text
+            from screener import add_manual_ticker
+            syms = []
+            blob = (pasted or "").strip()
             if up is not None:
-                ocr = ocr_image_to_text(up.getvalue())
-                if ocr:
-                    blob += "\n" + ocr
-                    st.info("OCR leyó texto de la imagen (revisa la lista).")
-                else:
-                    st.warning(
-                        "No se pudo hacer OCR de la imagen (normal en Streamlit Cloud). "
-                        "Copia/pega los símbolos desde Trade Ideas en el cuadro de texto."
-                    )
-            syms = extract_tickers(blob)
+                raw = up.getvalue()
+                name = (up.name or "").lower()
+                if name.endswith(".csv") or name.endswith(".txt") or (up.type or "").endswith("csv"):
+                    syms = extract_tickers_from_csv(raw)
+                    if syms:
+                        st.info(f"CSV leído: {len(syms)} símbolos.")
+                elif name.endswith((".png", ".jpg", ".jpeg", ".webp")):
+                    ocr = ocr_image_to_text(raw)
+                    if ocr:
+                        blob = (blob + "\n" + ocr).strip()
+                        st.info("OCR leyó texto de la imagen.")
+                    else:
+                        st.warning("No se pudo hacer OCR. Usa CSV o pega texto.")
+            if not syms and blob:
+                syms = extract_tickers(blob)
             if not syms:
-                st.error("No se detectaron tickers. Pega texto con símbolos en mayúsculas.")
+                st.error(
+                    "No se detectaron tickers. "
+                    "Prueba: exportar CSV de Moomoo, o pegar solo símbolos (CLRO, MIMI, WBUY) uno por línea."
+                )
             else:
+                ok = []
                 for s in syms:
                     try:
                         add_manual_ticker(s)
-                    except Exception:
+                        ok.append(s)
+                    except Exception as _e:
                         pass
-                st.success(f"Añadidos/actualizados: {', '.join(syms[:25])}" + ("…" if len(syms) > 25 else ""))
-                st.rerun()
+                if ok:
+                    st.success(f"Añadidos ({len(ok)}): {', '.join(ok[:30])}" + ("…" if len(ok) > 30 else ""))
+                    st.rerun()
+                else:
+                    st.error("Se detectaron símbolos pero no se pudieron guardar en la watchlist.")
 
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
 
