@@ -667,7 +667,7 @@ with tab_live:
 
     with st.expander("📷 Importar tickers (Moomoo CSV / texto / captura)", expanded=True):
         st.caption(
-            "Recomendado: exporta CSV desde Moomoo o pega símbolos (uno por línea). "
+            "Webull: pega la tabla completa y pulsa Cargar. Mejor aún: solo símbolos (KNRX, LFCR…) o CSV. "
             "También acepta PNG/JPG (OCR solo en PC con Tesseract)."
         )
         pasted = st.text_area(
