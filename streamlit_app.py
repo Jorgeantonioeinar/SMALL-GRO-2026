@@ -670,69 +670,77 @@ with tab_live:
     )
     config.FAST_SCREENING = velocidad_screening.startswith("⚡")
 
-    with st.expander("📷 Importar tickers (Moomoo CSV / texto / captura)", expanded=True):
-        st.caption(
-            "Webull: pega la tabla completa y pulsa Cargar. Mejor aún: solo símbolos (KNRX, LFCR…) o CSV. "
-            "También acepta PNG/JPG (OCR solo en PC con Tesseract)."
-        )
+    
+    st.markdown("### 📥 Importar lista (Webull / Moomoo)")
+    st.caption(
+        "1) Sube un **CSV** o pega la tabla.  2) Pulsa **Cargar lista**.  "
+        "3) Modo **Manual** + **Rápido** + **Calificar**.  "
+        "No uses el cuadro de la izquierda para tablas de Webull."
+    )
+    c1, c2 = st.columns(2)
+    with c1:
         pasted = st.text_area(
-            "Pegar texto del scanner",
-            height=100,
-            placeholder="CLRO\nMIMI\nWBUY\nGYGY",
+            "Pegar texto / tabla Webull",
+            height=120,
+            placeholder="Pega aquí la tabla completa de Webull o Moomoo…",
             key="import_paste_tickers",
         )
+    with c2:
         up = st.file_uploader(
-            "CSV Moomoo / Webull o imagen",
-            type=["csv", "txt", "png", "jpg", "jpeg", "webp"],
+            "Archivo CSV / TXT",
+            type=["csv", "txt"],
             key="import_file_tickers",
         )
-        if st.button("➕ Cargar tickers al watchlist manual", key="btn_import_tickers"):
-            from ticker_from_text import extract_tickers, extract_tickers_from_csv, ocr_image_to_text
-            from screener import add_manual_ticker
-            syms = []
-            blob = (pasted or "").strip()
-            if up is not None:
-                raw = up.getvalue()
-                name = (up.name or "").lower()
-                if name.endswith(".csv") or name.endswith(".txt") or (up.type or "").endswith("csv"):
-                    syms = extract_tickers_from_csv(raw)
-                    if syms:
-                        st.info(f"CSV leído: {len(syms)} símbolos.")
-                elif name.endswith((".png", ".jpg", ".jpeg", ".webp")):
-                    ocr = ocr_image_to_text(raw)
-                    if ocr:
-                        blob = (blob + "\n" + ocr).strip()
-                        st.info("OCR leyó texto de la imagen.")
-                    else:
-                        st.warning("No se pudo hacer OCR. Usa CSV o pega texto.")
-            if not syms and blob:
-                syms = extract_tickers(blob)
-            if not syms:
-                st.error(
-                    "No se detectaron tickers. "
-                    "Prueba: exportar CSV de Moomoo, o pegar solo símbolos (CLRO, MIMI, WBUY) uno por línea."
-                )
-            else:
-                try:
-                    ok = replace_manual_watchlist(syms)
-                except Exception:
-                    ok = []
-                    for s in syms:
-                        try:
-                            add_manual_ticker(s)
-                            ok.append(s)
-                        except Exception:
-                            pass
-                st.session_state["manual_watchlist"] = list(ok)
-                if ok:
-                    st.success(
-                        f"Watchlist lista ({len(ok)}): {', '.join(ok[:30])}"
-                        + ("…" if len(ok) > 30 else "")
-                        + " → Modo Manual + Calificar / Ejecutar Screening."
-                    )
-                    st.rerun()
-                else:
-                    st.error("Se detectaron símbolos pero no se pudieron guardar en la watchlist.")
+        if up is not None:
+            st.caption(f"Archivo: **{up.name}** ({len(up.getvalue())} bytes)")
+
+    if st.button("➕ Cargar lista a watchlist", type="primary", key="btn_import_tickers"):
+        from ticker_from_text import extract_tickers, extract_tickers_from_csv
+        syms: list = []
+        sources = []
+        if up is not None:
+            raw = up.getvalue()
+            syms = extract_tickers_from_csv(raw)
+            sources.append(f"CSV:{len(syms)}")
+        blob = (pasted or "").strip()
+        if blob:
+            from_paste = extract_tickers(blob)
+            sources.append(f"texto:{len(from_paste)}")
+            for s in from_paste:
+                if s not in syms:
+                    syms.append(s)
+        # quitar basura típica
+        ban = {"AAPL", "TSLA", "MSFT", "AMZN", "NVDA", "META", "GOOG", "GOOGL"}
+        syms = [s for s in syms if s not in ban]
+        if not syms:
+            st.error(
+                "No se detectó ningún ticker. "
+                "Prueba CSV de Moomoo (columna Symbol) o pega líneas con solo el símbolo."
+            )
+        else:
+            try:
+                ok = replace_manual_watchlist(syms)
+            except Exception as e:
+                ok = []
+                st.warning(f"No se pudo escribir archivo ({e}); se usa solo sesión.")
+                ok = list(syms)
+            st.session_state["manual_watchlist"] = list(ok)
+            st.session_state.pop("manual_ranked", None)
+            st.success(
+                f"✅ Watchlist: **{len(ok)}** tickers ({', '.join(sources)})\n\n"
+                + ", ".join(ok[:40])
+                + ("…" if len(ok) > 40 else "")
+            )
+            st.info("Siguiente: deja **Manual** + **Rápido** y pulsa **Calificar mis tickers manuales**.")
+            st.rerun()
+
+    # Estado visible de la watchlist en sesión
+    _wl = st.session_state.get("manual_watchlist") or [e["symbol"] for e in load_manual_tickers()]
+    if _wl:
+        st.caption(f"Watchlist activa (**{len(_wl)}**): " + ", ".join(_wl[:25]) + ("…" if len(_wl) > 25 else ""))
+    else:
+        st.caption("Watchlist vacía — carga CSV o pega texto arriba.")
+
 
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
 
@@ -781,29 +789,27 @@ with tab_live:
                     st.session_state.alerted_symbols.add(r["symbol"])
 
     # -----------------------------------------------------------------
-    # 📌 MIS TICKERS MANUALES — siempre visibles, SIN el corte de Top 20
+    # MIS TICKERS MANUALES
     # -----------------------------------------------------------------
-    # El scanner automático trae hasta 30 tickers y solo se muestran los
-    # mejores config.TOP_N_CANDIDATOS (20) por score — eso puede dejar
-    # afuera de la tabla principal a tus tickers manuales aunque sí se
-    # hayan calificado. Este panel siempre muestra el score real de TODOS
-    # tus tickers manuales, compitan o no con el Top 20 del día.
-    manual_entries_raw = load_manual_tickers()
-    if manual_entries_raw:
-        st.subheader("📌 Mis Tickers Manuales")
-        if st.button("🔄 Calificar mis tickers manuales"):
-            with st.spinner("Calificando tus tickers manuales..."):
-                _tickers = manual_entries_raw
-                if st.session_state.get("manual_watchlist"):
-                    _tickers = [
-                        {"symbol": s, "float_override": None, "rvol_override": None}
-                        for s in st.session_state["manual_watchlist"]
-                    ]
-                if not _tickers:
-                    st.warning("No hay tickers en la watchlist. Usa «Cargar tickers» arriba con el pegado de Webull.")
-                else:
-                    st.caption(f"Calificando {len(_tickers)} símbolos…")
-                    st.session_state.manual_ranked = rank_candidates(fetcher, tickers=_tickers)
+    if st.session_state.get("manual_watchlist"):
+        manual_entries_raw = [
+            {"symbol": s, "float_override": None, "rvol_override": None}
+            for s in st.session_state["manual_watchlist"]
+        ]
+    else:
+        manual_entries_raw = load_manual_tickers()
+
+    st.subheader("📌 Mis Tickers Manuales")
+    if not manual_entries_raw:
+        st.warning("Watchlist vacía. Usa **Cargar lista a watchlist** arriba (CSV o pegado).")
+    else:
+        st.caption("En lista: " + ", ".join(e["symbol"] for e in manual_entries_raw[:30]))
+        if st.button("🔄 Calificar mis tickers manuales", key="btn_score_manual"):
+            with st.spinner(f"Calificando {len(manual_entries_raw)} símbolos…"):
+                st.session_state.manual_ranked = rank_candidates(
+                    fetcher, tickers=manual_entries_raw
+                )
+
 
         if st.session_state.get("manual_ranked"):
             render_ranking_table(st.session_state.manual_ranked, key_suffix="manual")

@@ -1,4 +1,4 @@
-"""Extrae símbolos desde texto Webull/Moomoo, OCR o CSV."""
+"""Extrae símbolos desde texto Webull/Moomoo, CSV o lista simple."""
 from __future__ import annotations
 
 import csv
@@ -21,41 +21,35 @@ _STOP = {
     "INC", "LTD", "CORP", "PLC", "CO", "GROUP", "HOLDINGS", "HOLDING", "TECHNOLOGY",
     "TECHNOLOGIES", "LIMITED", "INCORPORATED", "INTERNATIONAL", "GLOBAL", "BIO",
     "PREMARKET", "AFTER", "HOURS", "MINUTES", "WEEKS", "MONTH", "MONTHS", "SPARK",
-    "CHART", "GAINERS", "LOSERS", "ACTIVE", "WEBULL", "MOOMOO", "NO",
+    "CHART", "GAINERS", "LOSERS", "ACTIVE", "WEBULL", "MOOMOO", "NO", "TICKER",
 }
 
-# Webull a menudo pone el TICKER solo en una línea (2-5 letras mayúsculas)
 _RE_TICKER_LINE = re.compile(r"^\s*([A-Za-z]{1,5})\s*$")
 _RE_TICKER_TOKEN = re.compile(r"\b([A-Za-z]{1,5})\b")
 _RE_PCT = re.compile(r"[+\-]?\d+\.?\d*\s*%")
-_RE_NUM = re.compile(r"^[\d,\.]+[KMB]?$", re.I)
+_RE_NUM = re.compile(r"^[\d,\.]+[KMBT]?$", re.I)
 
 
 def _clean_token(t: str) -> str:
     t = (t or "").upper().strip()
-    t = t.replace("$", "").strip()
-    if "." in t and not t.startswith("BRK"):
-        # US.AAPL -> AAPL
+    if "." in t:
         t = t.split(".")[-1]
     t = re.sub(r"[^A-Z]", "", t)
     return t
 
 
 def _is_ticker(t: str) -> bool:
-    if not t or len(t) < 1 or len(t) > 5:
+    if not t or len(t) < 2 or len(t) > 5:
         return False
-    if t in _STOP or t.isdigit():
+    if t in _STOP or not t.isalpha():
         return False
-    if len(t) < 2:
-        return False
-    return t.isalpha()
+    return True
 
 
-def extract_tickers(text: str, max_n: int = 50) -> List[str]:
-    """Robusto ante pegado Webull (nombre / ticker / % en líneas distintas)."""
+def extract_tickers(text: str, max_n: int = 80) -> List[str]:
     if not text or not str(text).strip():
         return []
-    text = str(text).replace("\xa0", " ").replace("…", " ").replace("...", " ")
+    text = str(text).replace("\xa0", " ").replace("…", " ")
     lines = text.splitlines()
     out: List[str] = []
     seen = set()
@@ -66,54 +60,94 @@ def extract_tickers(text: str, max_n: int = 50) -> List[str]:
             seen.add(tok)
             out.append(tok)
 
-    # 1) Líneas que son SOLO el ticker (patrón típico Webull)
     for line in lines:
         line = line.strip()
-        if not line or _RE_PCT.search(line) or _RE_NUM.match(line.replace(",", "")):
+        if not line or _RE_PCT.search(line):
+            continue
+        if _RE_NUM.match(line.replace(",", "")):
             continue
         m = _RE_TICKER_LINE.match(line)
         if m:
             add(m.group(1))
 
-    # 2) Tokens en el texto completo (por si viene en una sola línea)
     if len(out) < 3:
         cleaned = _RE_PCT.sub(" ", text)
         for m in _RE_TICKER_TOKEN.finditer(cleaned):
             add(m.group(1))
             if len(out) >= max_n:
                 break
-
     return out[:max_n]
 
 
-def extract_tickers_from_csv(file_bytes: bytes, max_n: int = 50) -> List[str]:
+def extract_tickers_from_csv(file_bytes: bytes, max_n: int = 80) -> List[str]:
+    """CSV Moomoo/Webull: columna Symbol/Ticker, o primera columna."""
+    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+        try:
+            text = file_bytes.decode(enc)
+            break
+        except Exception:
+            text = file_bytes.decode("utf-8", errors="replace")
+    out: List[str] = []
+    seen = set()
+
+    def add(val: str):
+        tok = _clean_token(val)
+        if _is_ticker(tok) and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+
+    # Sniffer dialect
     try:
-        text = file_bytes.decode("utf-8-sig", errors="replace")
-    except Exception:
-        text = file_bytes.decode("latin-1", errors="replace")
-    try:
-        reader = csv.DictReader(io.StringIO(text))
+        sample = text[:4096]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
         if reader.fieldnames:
-            keys = {k.strip().lower(): k for k in reader.fieldnames if k}
+            keys = {(k or "").strip().lower(): k for k in reader.fieldnames if k}
             sym_key = None
-            for cand in ("symbol", "ticker", "sym", "code", "stock"):
+            for cand in ("symbol", "ticker", "sym", "code", "stock", "符号"):
                 if cand in keys:
                     sym_key = keys[cand]
                     break
-            out: List[str] = []
-            seen = set()
+            # a veces "Symbol/Name"
+            if not sym_key:
+                for lk, orig in keys.items():
+                    if "symbol" in lk or "ticker" in lk:
+                        sym_key = orig
+                        break
             if sym_key:
                 for row in reader:
-                    val = _clean_token(row.get(sym_key) or "")
-                    if _is_ticker(val) and val not in seen:
-                        seen.add(val)
-                        out.append(val)
+                    raw = (row.get(sym_key) or "").strip()
+                    # "KNRX Lexicon" or "KNRX"
+                    first = raw.split()[0] if raw else ""
+                    add(first)
                     if len(out) >= max_n:
-                        break
+                        return out
                 if out:
                     return out
     except Exception:
         pass
+
+    # Primera columna sin header útil
+    try:
+        reader2 = csv.reader(io.StringIO(text))
+        rows = list(reader2)
+        start = 0
+        if rows and rows[0] and re.search(r"symbol|ticker|name", (rows[0][0] or ""), re.I):
+            start = 1
+        for row in rows[start:]:
+            if not row:
+                continue
+            add(row[0].split()[0])
+            if len(out) >= max_n:
+                break
+        if out:
+            return out
+    except Exception:
+        pass
+
     return extract_tickers(text, max_n=max_n)
 
 
@@ -122,7 +156,6 @@ def ocr_image_to_text(file_bytes: bytes) -> str:
         from io import BytesIO
         from PIL import Image
         import pytesseract
-        img = Image.open(BytesIO(file_bytes))
-        return pytesseract.image_to_string(img) or ""
+        return pytesseract.image_to_string(Image.open(BytesIO(file_bytes))) or ""
     except Exception:
         return ""
