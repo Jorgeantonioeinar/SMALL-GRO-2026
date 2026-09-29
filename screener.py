@@ -927,10 +927,20 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
             return None
 
     results = []
-    use_parallel = getattr(config, "FAST_SCREENING", False) and len(tickers) > 3
+    # Precalentar HaltEngine 1 vez (evita 15 descargas RSS en paralelo)
+    if get_halt_engine is not None:
+        try:
+            get_halt_engine().get_halt_status("__warmup__")
+        except Exception:
+            pass
+
+    use_parallel = getattr(config, "FAST_SCREENING", False) and len(tickers) >= 2
     if use_parallel:
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        workers = int(getattr(config, "FAST_SCREENING_WORKERS", 6) or 6)
+        workers = min(
+            int(getattr(config, "FAST_SCREENING_WORKERS", 10) or 10),
+            max(2, len(tickers)),
+        )
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(_one, e) for e in tickers]
             for f in as_completed(futs):

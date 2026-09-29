@@ -483,7 +483,7 @@ IBKR_ENABLED = os.getenv("IBKR_ENABLED", "true").lower() in ("1", "true", "yes")
 # Completo: Twelve Data PM/AH, SEC dilution, sentiment (más lento, más datos)
 # Rápido: sin Twelve Data ni SEC/news; prioritiza precio/gap/RVOL/float en caché
 FAST_SCREENING = False  # se sobreescribe en runtime desde la UI
-FAST_SCREENING_WORKERS = 6  # paralelismo en modo rápido
+FAST_SCREENING_WORKERS = 10  # paralelismo en modo rápido
 
 
 # ---------------------------------------------------------------------------

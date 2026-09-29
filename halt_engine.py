@@ -18,6 +18,7 @@ Uso:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -38,68 +39,70 @@ class HaltEngine:
         self._cache: dict[str, dict] = {}
         self._cache_ts: float = 0.0
         self._last_error: Optional[str] = None
+        self._refresh_lock = threading.Lock()
+
 
     def _refresh_if_needed(self) -> None:
         now = time.time()
         if now - self._cache_ts < CACHE_TTL_SECONDS and self._cache:
             return
-        try:
-            resp = requests.get(NASDAQ_HALT_RSS, timeout=10)
-            resp.raise_for_status()
-            root = ET.fromstring(resp.content)
+        with self._refresh_lock:
+            now = time.time()
+            if now - self._cache_ts < CACHE_TTL_SECONDS and self._cache:
+                return
+            try:
+                resp = requests.get(NASDAQ_HALT_RSS, timeout=8)
+                resp.raise_for_status()
+                root = ET.fromstring(resp.content)
 
-            # El feed de Nasdaq usa namespaces variables; buscamos items de forma flexible
-            items = root.findall(".//item") or root.findall(".//{*}item")
-            new_cache: dict[str, dict] = {}
+                items = root.findall(".//item") or root.findall(".//{*}item")
+                new_cache: dict[str, dict] = {}
 
-            for item in items:
-                title = (item.findtext("title") or item.findtext("{*}title") or "").strip()
-                description = (item.findtext("description") or item.findtext("{*}description") or "").strip()
-                pub = (item.findtext("pubDate") or item.findtext("{*}pubDate") or "").strip()
+                for item in items:
+                    title = (item.findtext("title") or item.findtext("{*}title") or "").strip()
+                    description = (item.findtext("description") or item.findtext("{*}description") or "").strip()
+                    pub = (item.findtext("pubDate") or item.findtext("{*}pubDate") or "").strip()
 
-                # El título suele contener el símbolo, p.ej. "APUS - Halted" o similar
-                symbol = None
-                for token in title.replace(",", " ").split():
-                    tok = token.strip().upper().replace(":", "")
-                    if 1 <= len(tok) <= 6 and tok.isalpha():
-                        symbol = tok
-                        break
-                if not symbol:
-                    # Fallback: buscar en description campos tipo "Issue Symbol"
-                    for part in description.replace("\n", " ").split():
-                        if part.upper().startswith("SYMBOL") or len(part) <= 6:
-                            cand = part.strip().upper()
-                            if cand.isalpha() and 1 <= len(cand) <= 6:
-                                symbol = cand
-                                break
-                if not symbol:
-                    continue
+                    symbol = None
+                    for token in title.replace(",", " ").split():
+                        tok = token.strip().upper().replace(":", "")
+                        if 1 <= len(tok) <= 6 and tok.isalpha():
+                            symbol = tok
+                            break
+                    if not symbol:
+                        for part in description.replace("\n", " ").split():
+                            if part.upper().startswith("SYMBOL") or len(part) <= 6:
+                                cand = part.strip().upper()
+                                if cand.isalpha() and 1 <= len(cand) <= 6:
+                                    symbol = cand
+                                    break
+                    if not symbol:
+                        continue
 
-                reason = None
-                for code in ("T1", "T2", "T3", "T5", "T6", "T12", "H4", "H9", "H10", "H11", "LUDP", "LUDS", "MWC"):
-                    if code in description.upper() or code in title.upper():
-                        reason = code
-                        break
-                if not reason:
-                    reason = "HALT"
+                    reason = None
+                    for code in ("T1", "T2", "T3", "T5", "T6", "T12", "H4", "H9", "H10", "H11", "LUDP", "LUDS", "MWC"):
+                        if code in description.upper() or code in title.upper():
+                            reason = code
+                            break
+                    if not reason:
+                        reason = "HALT"
 
-                new_cache[symbol] = {
-                    "halted": True,
-                    "reason": reason,
-                    "title": title,
-                    "description": description[:300],
-                    "pub_date": pub,
-                    "source": "nasdaq_trader_rss",
-                }
+                    new_cache[symbol] = {
+                        "halted": True,
+                        "reason": reason,
+                        "title": title,
+                        "description": description[:300],
+                        "pub_date": pub,
+                        "source": "nasdaq_trader_rss",
+                    }
 
-            self._cache = new_cache
-            self._cache_ts = now
-            self._last_error = None
-            logger.info(f"HaltEngine: {len(new_cache)} símbolos en halt/pause activos (RSS Nasdaq).")
-        except Exception as e:
-            self._last_error = str(e)
-            logger.warning(f"HaltEngine: no se pudo refrescar RSS de Nasdaq: {e}")
-            # No vaciamos la caché anterior: mejor datos viejos que nada
+                self._cache = new_cache
+                self._cache_ts = now
+                self._last_error = None
+                logger.info(f"HaltEngine: {len(new_cache)} símbolos en halt/pause activos (RSS Nasdaq).")
+            except Exception as e:
+                self._last_error = str(e)
+                logger.warning(f"HaltEngine: no se pudo refrescar RSS de Nasdaq: {e}")
 
     def get_halt_status(self, symbol: str) -> dict:
         """

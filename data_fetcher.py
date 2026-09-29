@@ -653,7 +653,8 @@ class DataFetcher:
             from finvizfinance.quote import finvizfinance as FinvizQuote
             from finvizfinance.util import number_convert
 
-            time.sleep(0.3)  # pequeña pausa, buen ciudadano con el sitio
+            if not getattr(config, "FAST_SCREENING", False):
+                time.sleep(0.3)  # en Rápido se omite (paralelismo controlado)
             stock = FinvizQuote(symbol)
             if not stock.flag:
                 logger.info(f"[{symbol}] Finviz no encontró este ticker.")
@@ -789,7 +790,8 @@ class DataFetcher:
         yahoo_cooling_down = time.time() < self._yahoo_disabled_until
 
         if still_missing and not yahoo_cooling_down:
-            time.sleep(0.6)  # pequeña pausa preventiva: reduce la chance de disparar el 429 desde el 1er ticker
+            if not getattr(config, "FAST_SCREENING", False):
+                time.sleep(0.6)  # omitido en Rápido
             try:
                 ticker = yf.Ticker(symbol)
                 info = ticker.info or {}
@@ -979,7 +981,8 @@ class DataFetcher:
             # nada para after-hours específicamente, incluso con el
             # parámetro — eso sería una limitación real del plan, no un
             # bug de este código.
-            time.sleep(0.3)  # buen ciudadano: no ráfaga contra el límite por minuto
+            if not getattr(config, "FAST_SCREENING", False):
+                time.sleep(0.3)
             resp = requests.get(url, timeout=10)
             data = resp.json()
 
