@@ -924,7 +924,19 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
             return score_candidate(symbol, fetcher, float_override, rvol_override)
         except Exception as e:
             logger.warning(f"[{symbol}] Error calculando score: {e}")
-            return None
+            return {
+                "symbol": symbol,
+                "price": None,
+                "gap_pct": None,
+                "rvol": None,
+                "float_shares": None,
+                "rsi": None,
+                "score": 0.0,
+                "entry_score": 0.0,
+                "signal": "ERROR",
+                "notes": [str(e)[:120]],
+                "chase_status": "Error",
+            }
 
     results = []
     # Precalentar HaltEngine 1 vez (evita 15 descargas RSS en paralelo)
@@ -938,7 +950,7 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
     if use_parallel:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         workers = min(
-            int(getattr(config, "FAST_SCREENING_WORKERS", 10) or 10),
+            int(getattr(config, "FAST_SCREENING_WORKERS", 4) or 4),
             max(2, len(tickers)),
         )
         with ThreadPoolExecutor(max_workers=workers) as ex:

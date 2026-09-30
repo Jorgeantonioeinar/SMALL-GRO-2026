@@ -136,6 +136,8 @@ class DataFetcher:
     # ------------------------------------------------------------------
     def get_bars(self, symbol: str, minutes_back: int = 60, timeframe=TimeFrame.Minute):
         """Devuelve un DataFrame con barras recientes (OHLCV) de Alpaca."""
+        if time.time() < getattr(self, "_alpaca_disabled_until", 0):
+            return pd.DataFrame()
         # Preferir barras IBKR (o Alpaca vía MDM) si el manager está activo
         if get_market_data_manager is not None:
             try:
@@ -172,62 +174,87 @@ class DataFetcher:
                 df = df.xs(symbol, level=0)
             return df.tail(minutes_back)
         except Exception as e:
-            logger.warning(f"[{symbol}] Error obteniendo barras de Alpaca: {e}")
+            msg = str(e).lower()
+            if "too many requests" in msg or "429" in msg:
+                self._alpaca_disabled_until = time.time() + 90
+                logger.warning("Alpaca rate limit (bars) — pausa 90s")
+            else:
+                logger.warning(f"[{symbol}] Error obteniendo barras de Alpaca: {e}")
             return pd.DataFrame()
 
     def get_latest_price(self, symbol: str):
-        # 1) IBKR TWS si está conectado; si no, el manager ya hizo failover a Alpaca
+        """Precio: MDM/IBKR → realtime → Alpaca IEX → Yahoo (si Alpaca 429)."""
+        if time.time() < getattr(self, "_alpaca_disabled_until", 0):
+            # No golpear Alpaca; ir directo a Yahoo
+            return self._yahoo_last_price(symbol)
+
+        # Market data manager (IBKR/Alpaca unificado) si existe
         if get_market_data_manager is not None:
             try:
                 mdm = get_market_data_manager()
                 px = mdm.get_latest_price(symbol)
-                if px is not None and px > 0:
+                if px is not None:
                     return float(px)
             except Exception as _mdm_e:
                 logger.debug(f"MDM price skip {symbol}: {_mdm_e}")
 
-        """
-        Cadena de redundancia para el precio:
-          1. WebSocket en tiempo real (si está conectado y el dato es reciente)
-          2. REST de Alpaca (latest quote) - lo de siempre
-          3. Último dato del WebSocket aunque esté "viejo" (stale) - último recurso
-        """
-        # --- 1) WebSocket (fuente principal, si está activo) ---
-        if self.realtime_feed is not None:
-            cached = self.realtime_feed.get_latest(symbol, max_age_seconds=15)
-            if cached and cached.get("price") is not None and not cached["stale"]:
-                return cached["price"]
+        # Stream en memoria
+        try:
+            if self.realtime_feed is not None:
+                cached = self.realtime_feed.get_last(symbol)
+                if cached and cached.get("price") is not None and not cached.get("stale"):
+                    return cached["price"]
+        except Exception:
+            pass
 
-        # --- 2) REST de Alpaca (respaldo 1) ---
+        # Alpaca REST
         try:
             req = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
             response = self.data_client.get_stock_latest_quote(req)
-            if symbol not in response:
-                logger.warning(
-                    f"[{symbol}] Sin cotización en el feed IEX (probable ticker OTC o no cubierto "
-                    f"por este feed gratuito, no es un error de credenciales)."
-                )
-                raise KeyError(symbol)
-            quote = response[symbol]
-            # Usamos el punto medio entre bid/ask como precio de referencia
-            if quote.bid_price and quote.ask_price:
-                return (quote.bid_price + quote.ask_price) / 2
-            return quote.ask_price or quote.bid_price
-        except KeyError:
-            pass  # ya se logueó arriba con un mensaje claro
+            quote = response.get(symbol) if isinstance(response, dict) else None
+            if quote is None and hasattr(response, "__getitem__"):
+                try:
+                    quote = response[symbol]
+                except Exception:
+                    quote = None
+            if quote is not None:
+                if getattr(quote, "bid_price", None) and getattr(quote, "ask_price", None):
+                    return (quote.bid_price + quote.ask_price) / 2
+                return quote.ask_price or quote.bid_price
         except Exception as e:
-            logger.warning(f"[{symbol}] Error obteniendo cotización REST: {e}")
+            msg = str(e).lower()
+            if "too many requests" in msg or "429" in msg:
+                self._alpaca_disabled_until = time.time() + 90
+                logger.warning("Alpaca rate limit (quote) — pausa 90s; se usa Yahoo")
+            else:
+                logger.warning(f"[{symbol}] Error obteniendo cotización REST: {e}")
 
-        # --- 3) Caché vieja del WebSocket (respaldo 2, último recurso) ---
-        if self.realtime_feed is not None:
-            cached = self.realtime_feed.get_latest(symbol, max_age_seconds=15)
-            if cached and cached.get("price") is not None:
-                logger.info(
-                    f"[{symbol}] REST falló, usando último precio del WebSocket "
-                    f"(tiene {cached['age_seconds']}s de antigüedad)"
-                )
-                return cached["price"]
+        # Yahoo fallback (gratis, un poco más lento pero evita tabla vacía)
+        return self._yahoo_last_price(symbol)
 
+
+
+    def _yahoo_last_price(self, symbol: str):
+        """Respaldo de precio vía yfinance cuando Alpaca está limitado."""
+        try:
+            t = yf.Ticker(symbol)
+            fi = getattr(t, "fast_info", None)
+            if fi is not None:
+                for key in ("last_price", "lastPrice", "regular_market_price"):
+                    try:
+                        v = fi.get(key) if hasattr(fi, "get") else getattr(fi, key, None)
+                        if v is not None and float(v) > 0:
+                            return float(v)
+                    except Exception:
+                        pass
+            hist = t.history(period="1d", interval="1m")
+            if hist is not None and not hist.empty:
+                return float(hist["Close"].iloc[-1])
+            hist = t.history(period="5d")
+            if hist is not None and not hist.empty:
+                return float(hist["Close"].iloc[-1])
+        except Exception as e:
+            logger.debug(f"[{symbol}] Yahoo price falló: {e}")
         return None
 
     def get_massive_last_price(self, symbol: str):

@@ -801,11 +801,11 @@ with tab_live:
 
     
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
-
         _spin = "⚡ Screening RÁPIDO..." if config.FAST_SCREENING else "🐢 Screening COMPLETO (más fuentes)..."
         with st.spinner(_spin):
+            universe = []
             if modo_screening.startswith("🔍"):
-                universe = get_top30_gappers_spikes()
+                universe = get_top30_gappers_spikes() or []
                 # FAST: limitar solo el escáner automático (no la watchlist manual)
                 if universe and config.FAST_SCREENING:
                     universe = universe[:15]
@@ -840,21 +840,32 @@ with tab_live:
                 and modo_screening.startswith("🔍")
             ):
                 universe = universe[:15]
+            ranked_by_engine = {}
             if universe:
                 _is_manual = not modo_screening.startswith("🔍")
                 _prev_lim = getattr(config, "_RANK_LIMIT_OVERRIDE", None)
                 if _is_manual:
-                    config._RANK_LIMIT_OVERRIDE = 0  # devolver todos
+                    config._RANK_LIMIT_OVERRIDE = 0  # mostrar todos
                 try:
-                    ranked_by_engine = compute_ranked_with_engine_mode(fetcher, universe, motor_scoring)
+                    ranked_by_engine = compute_ranked_with_engine_mode(fetcher, universe, motor_scoring) or {}
+                except Exception as _rank_ex:
+                    st.error(f"Error en ranking: {_rank_ex}")
+                    ranked_by_engine = {}
                 finally:
                     config._RANK_LIMIT_OVERRIDE = _prev_lim
-            else:
-                ranked_by_engine = {}
             st.session_state.ranked_by_engine = ranked_by_engine
-            # Compatibilidad con el resto del flujo (gráfico, compra, etc.):
-            # siempre apunta a una sola lista — prioriza "classic" si están ambas.
-            st.session_state.ranked = ranked_by_engine.get("classic") or ranked_by_engine.get("smart") or []
+            st.session_state.ranked = (
+                ranked_by_engine.get("classic")
+                or ranked_by_engine.get("smart")
+                or []
+            )
+            if st.session_state.ranked:
+                st.success(f"Listo: {len(st.session_state.ranked)} tickers calificados.")
+            else:
+                st.warning(
+                    "Screening terminó sin filas. Usa **Rápido**, espera 1 min si hubo rate limit, "
+                    "y no pulses Completo ni varios botones a la vez."
+                )
 
             # --- Alerta de Telegram: candidatos con score alto (una sola vez por símbolo/sesión) ---
             if "alerted_symbols" not in st.session_state:
@@ -889,12 +900,14 @@ with tab_live:
                     st.session_state.manual_ranked = rank_candidates(
                         fetcher, tickers=manual_entries_raw
                     )
+                    st.success(
+                        f"Calificados {len(st.session_state.manual_ranked or [])} / {len(manual_entries_raw)} símbolos"
+                    )
+                except Exception as _ex:
+                    st.error(f"Error al calificar: {_ex}")
                 finally:
                     config._RANK_LIMIT_OVERRIDE = _prev_lim
-                st.success(
-                    f"Calificados {len(st.session_state.manual_ranked)} / {len(manual_entries_raw)} símbolos"
-                )
-
+        
 
         if st.session_state.get("manual_ranked"):
             render_ranking_table(st.session_state.manual_ranked, key_suffix="manual")
