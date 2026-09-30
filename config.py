@@ -230,7 +230,9 @@ TRADING_WINDOW_END_ET = "13:00"
 # ---------------------------------------------------------------------------
 SCORE_MIN_TO_BUY = 9.0       # a partir de esta calificación (escala 1-10) se
                               # considera señal de COMPRA en largo
-TOP_N_CANDIDATOS = 20         # cuántos candidatos mostrar en el ranking
+TOP_N_CANDIDATOS = 20         # ranking automático; watchlist manual muestra TODOS
+# _RANK_LIMIT_OVERRIDE se setea en runtime (0 = todos)
+
 
 
 # ---------------------------------------------------------------------------
@@ -505,3 +507,13 @@ FAST_SCREENING_WORKERS = 10  # paralelismo en modo rápido
 #   RVOL_MIN profiles: PM 2.0 | REG 3.0 | AH 1.5
 #   LISTO exige RVOL de sesión + gap + quality (no solo volumen crudo)
 VOLUME_FILTERS_V76 = True
+
+
+# ---------------------------------------------------------------------------
+# MOOMOO OPEND (solo LOCAL — Capa 1: datos; Capa 2: órdenes)
+# ---------------------------------------------------------------------------
+MOOMOO_OPEND_HOST = _get_secret("MOOMOO_OPEND_HOST", "127.0.0.1")
+MOOMOO_OPEND_PORT = int(_get_secret("MOOMOO_OPEND_PORT", "11111") or "11111")
+# SIMULATE = paper (por defecto). REAL solo cuando operes capital.
+MOOMOO_TRD_ENV = _get_secret("MOOMOO_TRD_ENV", "SIMULATE").upper()  # SIMULATE | REAL
+MOOMOO_ENABLED = _get_secret("MOOMOO_ENABLED", "True") == "True"

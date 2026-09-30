@@ -954,6 +954,12 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
                 results.append(r)
 
     results.sort(key=_rank_key)
+    # limit_n=None -> TOP_N; limit_n=0 o "all" -> devolver todos (watchlist manual)
+    limit_n = getattr(config, "_RANK_LIMIT_OVERRIDE", None)
+    if limit_n == 0 or limit_n == "all":
+        return results
+    if isinstance(limit_n, int) and limit_n > 0:
+        return results[:limit_n]
     return results[: config.TOP_N_CANDIDATOS]
 
 

@@ -141,6 +141,25 @@ if not config.ALPACA_API_KEY or not config.ALPACA_SECRET_KEY:
 # ---------------------------------------------------------------------------
 st.sidebar.title("🚀 Titon")
 
+# --- Moomoo OpenD (Capa 1, solo local) ---
+if getattr(config, "MOOMOO_ENABLED", True):
+    try:
+        from moomoo_client import get_moomoo_client
+        _mm = get_moomoo_client()
+        _mm_st = _mm.status()
+        if _mm_st.get("quote_connected") or (_mm_st.get("port_open") and _mm_st.get("package_ok")):
+            st.sidebar.success(f"🟠 Moomoo OpenD: {_mm_st['host']}:{_mm_st['port']} OK")
+        elif not _mm_st.get("package_ok"):
+            st.sidebar.warning("🟠 Moomoo: instala `pip install moomoo-api`")
+        elif not _mm_st.get("port_open"):
+            st.sidebar.info("🟠 Moomoo OpenD: apagado (abre OpenD en esta PC)")
+        else:
+            st.sidebar.info(f"🟠 Moomoo: {_mm_st.get('message', '—')}")
+    except Exception as _e_mm:
+        st.sidebar.caption(f"🟠 Moomoo: {_e_mm}")
+
+
+
 st.sidebar.header("⚡ Modo de Salida")
 _exit_labels = [p["label"] for p in config.EXIT_PROFILES.values()]
 _exit_keys = list(config.EXIT_PROFILES.keys())
@@ -741,6 +760,38 @@ with tab_live:
     else:
         st.caption("Watchlist vacía — carga CSV o pega texto arriba.")
 
+    with st.expander("🟠 Moomoo OpenD — cotización (Capa 1)", expanded=False):
+        st.caption(
+            "Solo PC local con OpenD en 127.0.0.1:11111. "
+            "Paper/órdenes = Capa 2 (próxima)."
+        )
+        try:
+            from moomoo_client import get_moomoo_client
+            mm = get_moomoo_client()
+            st_json = mm.status()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Puerto OpenD", "OK" if st_json.get("port_open") else "Cerrado")
+            c2.metric("moomoo-api", "OK" if st_json.get("package_ok") else "Falta")
+            c3.metric("Quote ctx", "On" if st_json.get("quote_connected") else "Off")
+            if st_json.get("message"):
+                st.caption(st_json["message"])
+            syms_mm = st.text_input("Tickers a cotizar", value="CLRO MIMI", key="moomoo_snap_symbols")
+            b1, b2 = st.columns(2)
+            if b1.button("Cotizar vía Moomoo", key="btn_moomoo_snap"):
+                parts = [x.strip().upper() for x in syms_mm.replace(",", " ").split() if x.strip()]
+                with st.spinner("OpenD…"):
+                    rows = mm.get_snapshot(parts)
+                if rows:
+                    st.dataframe(rows, use_container_width=True)
+                else:
+                    st.warning(mm.last_error or "Sin datos")
+            if b2.button("Desconectar quote", key="btn_moomoo_close"):
+                mm.close()
+                st.success("Desconectado")
+        except Exception as e:
+            st.error(str(e))
+
+
 
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
 
@@ -748,7 +799,7 @@ with tab_live:
         with st.spinner(_spin):
             if modo_screening.startswith("🔍"):
                 universe = get_top30_gappers_spikes()
-                # FAST top15: menos símbolos = menos Finviz en serie
+                # FAST: limitar solo el escáner automático (no la watchlist manual)
                 if universe and config.FAST_SCREENING:
                     universe = universe[:15]
                 if not universe:
@@ -763,7 +814,7 @@ with tab_live:
                         if e["symbol"] not in existentes:
                             universe.append(e)
             else:
-                # Manual: SOLO watchlist (session o archivo). Sin DEFAULT AAPL.
+                # Manual: SOLO watchlist completa (sin recorte a 15)
                 mw = st.session_state.get("manual_watchlist")
                 if mw:
                     universe = [{"symbol": s, "float_override": None, "rvol_override": None} for s in mw]
@@ -771,10 +822,28 @@ with tab_live:
                     universe = load_manual_tickers()
                 if not universe:
                     st.warning("Watchlist manual vacía. Pega Webull/Moomoo arriba y pulsa «Cargar tickers».")
+                else:
+                    st.caption(f"Modo Manual: calificando **{len(universe)}** símbolos (sin límite de 15).")
 
-            if universe and config.FAST_SCREENING and len(universe) > 15:
+            # En Manual no recortar: el usuario importó la lista a propósito (Webull/Moomoo)
+            if (
+                universe
+                and config.FAST_SCREENING
+                and len(universe) > 15
+                and modo_screening.startswith("🔍")
+            ):
                 universe = universe[:15]
-            ranked_by_engine = compute_ranked_with_engine_mode(fetcher, universe, motor_scoring) if universe else {}
+            if universe:
+                _is_manual = not modo_screening.startswith("🔍")
+                _prev_lim = getattr(config, "_RANK_LIMIT_OVERRIDE", None)
+                if _is_manual:
+                    config._RANK_LIMIT_OVERRIDE = 0  # devolver todos
+                try:
+                    ranked_by_engine = compute_ranked_with_engine_mode(fetcher, universe, motor_scoring)
+                finally:
+                    config._RANK_LIMIT_OVERRIDE = _prev_lim
+            else:
+                ranked_by_engine = {}
             st.session_state.ranked_by_engine = ranked_by_engine
             # Compatibilidad con el resto del flujo (gráfico, compra, etc.):
             # siempre apunta a una sola lista — prioriza "classic" si están ambas.
@@ -805,9 +874,18 @@ with tab_live:
     else:
         st.caption("En lista: " + ", ".join(e["symbol"] for e in manual_entries_raw[:30]))
         if st.button("🔄 Calificar mis tickers manuales", key="btn_score_manual"):
-            with st.spinner(f"Calificando {len(manual_entries_raw)} símbolos…"):
-                st.session_state.manual_ranked = rank_candidates(
-                    fetcher, tickers=manual_entries_raw
+            with st.spinner(f"Calificando {len(manual_entries_raw)} símbolos (lista completa)…"):
+                # No aplicar TOP_N: mostrar todos los de la watchlist (SUGP, etc.)
+                _prev_lim = getattr(config, "_RANK_LIMIT_OVERRIDE", None)
+                config._RANK_LIMIT_OVERRIDE = 0  # all
+                try:
+                    st.session_state.manual_ranked = rank_candidates(
+                        fetcher, tickers=manual_entries_raw
+                    )
+                finally:
+                    config._RANK_LIMIT_OVERRIDE = _prev_lim
+                st.success(
+                    f"Calificados {len(st.session_state.manual_ranked)} / {len(manual_entries_raw)} símbolos"
                 )
 
 
