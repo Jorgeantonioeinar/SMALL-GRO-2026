@@ -690,23 +690,29 @@ with tab_live:
     config.FAST_SCREENING = velocidad_screening.startswith("⚡")
 
     
+    
     st.markdown("### 📥 Importar lista (Webull / Moomoo)")
     st.caption(
-        "1) Sube un **CSV** o pega la tabla.  2) Pulsa **Cargar lista**.  "
-        "3) Modo **Manual** + **Rápido** + **Calificar**.  "
-        "No uses el cuadro de la izquierda para tablas de Webull."
+        "**Recomendado en scalp:** sube **CSV** (Browse files) → **Cargar lista**. "
+        "El pegado de tabla Webull es plan B; usa **Limpiar pegado** antes de pegar otra vez."
     )
+    # Limpiar el text_area sin borrar a mano
+    if st.session_state.pop("_clear_import_paste", False):
+        st.session_state["import_paste_tickers"] = ""
     c1, c2 = st.columns(2)
     with c1:
         pasted = st.text_area(
             "Pegar texto / tabla Webull",
-            height=120,
-            placeholder="Pega aquí la tabla completa de Webull o Moomoo…",
+            height=100,
+            placeholder="Solo si no tienes CSV. Pulsa «Limpiar pegado» antes de pegar de nuevo.",
             key="import_paste_tickers",
         )
+        if st.button("🧹 Limpiar pegado", key="btn_clear_paste"):
+            st.session_state["_clear_import_paste"] = True
+            st.rerun()
     with c2:
         up = st.file_uploader(
-            "Archivo CSV / TXT",
+            "Archivo CSV / TXT (preferido)",
             type=["csv", "txt"],
             key="import_file_tickers",
         )
@@ -728,37 +734,37 @@ with tab_live:
             for s in from_paste:
                 if s not in syms:
                     syms.append(s)
-        # quitar basura típica
         ban = {"AAPL", "TSLA", "MSFT", "AMZN", "NVDA", "META", "GOOG", "GOOGL"}
         syms = [s for s in syms if s not in ban]
         if not syms:
             st.error(
                 "No se detectó ningún ticker. "
-                "Prueba CSV de Moomoo (columna Symbol) o pega líneas con solo el símbolo."
+                "Usa CSV de Moomoo o pega y pulsa Cargar lista."
             )
         else:
             try:
                 ok = replace_manual_watchlist(syms)
             except Exception as e:
-                ok = []
-                st.warning(f"No se pudo escribir archivo ({e}); se usa solo sesión.")
                 ok = list(syms)
+                st.warning(f"Archivo no escrito ({e}); sesión OK.")
             st.session_state["manual_watchlist"] = list(ok)
             st.session_state.pop("manual_ranked", None)
+            # Auto-limpiar el pegado tras cargar (siguiente rerun)
+            st.session_state["_clear_import_paste"] = True
             st.success(
                 f"✅ Watchlist: **{len(ok)}** tickers ({', '.join(sources)})\n\n"
                 + ", ".join(ok[:40])
                 + ("…" if len(ok) > 40 else "")
             )
-            st.info("Siguiente: deja **Manual** + **Rápido** y pulsa **Calificar mis tickers manuales**.")
+            st.info("Siguiente: **Manual** + **Rápido** → **Calificar** (1 clic).")
             st.rerun()
 
-    # Estado visible de la watchlist en sesión
     _wl = st.session_state.get("manual_watchlist") or [e["symbol"] for e in load_manual_tickers()]
     if _wl:
         st.caption(f"Watchlist activa (**{len(_wl)}**): " + ", ".join(_wl[:25]) + ("…" if len(_wl) > 25 else ""))
     else:
-        st.caption("Watchlist vacía — carga CSV o pega texto arriba.")
+        st.caption("Watchlist vacía — CSV o pegado + Cargar lista.")
+
 
     with st.expander("🟠 Moomoo OpenD — cotización (Capa 1)", expanded=False):
         st.caption(
@@ -793,6 +799,7 @@ with tab_live:
 
 
 
+    
     if st.button("🚀 Ejecutar Screening Ahora", type="primary"):
 
         _spin = "⚡ Screening RÁPIDO..." if config.FAST_SCREENING else "🐢 Screening COMPLETO (más fuentes)..."

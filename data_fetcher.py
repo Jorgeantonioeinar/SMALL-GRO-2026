@@ -60,6 +60,7 @@ class DataFetcher:
 
         # Cache simple en memoria para no golpear yfinance repetidamente
         self._fundamentals_cache = {}
+        self._float_cache_ts = {}  # symbol -> epoch; reusar float varios minutos
         self._yahoo_disabled_until = 0.0  # circuit breaker por tiempo (epoch seconds), no permanente
         self._finviz_disabled_until = 0.0
         self._twelvedata_disabled_until = 0.0
@@ -72,6 +73,7 @@ class DataFetcher:
         # configura, get_latest_price() sigue funcionando 100% con REST.
         self.realtime_feed = None
         self._fmp_disabled = False
+        self._alpaca_disabled_until = 0.0
 
     def set_realtime_feed(self, feed):
         """Conecta un RealtimeFeed (realtime_feed.py) como fuente principal de precio."""
@@ -516,6 +518,8 @@ class DataFetcher:
 
     def _get_avg_daily_volume_alpaca(self, symbol: str):
         """Fuente principal del RVOL: barras diarias de Alpaca (últimos ~10 días hábiles)."""
+        if time.time() < getattr(self, "_alpaca_disabled_until", 0):
+            return None
         try:
             end = datetime.now(timezone.utc)
             start = end - timedelta(days=20)  # 20 días naturales -> ~10-14 hábiles
@@ -541,7 +545,12 @@ class DataFetcher:
                 return None
             return float(last_10["volume"].mean())
         except Exception as e:
-            logger.warning(f"[{symbol}] RVOL vía Alpaca (barras diarias) falló: {e}")
+            msg = str(e)
+            if "too many requests" in msg.lower():
+                self._alpaca_disabled_until = time.time() + 60
+                logger.warning("Alpaca rate limit — RVOL pausado 60s")
+            else:
+                logger.warning(f"[{symbol}] RVOL vía Alpaca (barras diarias) falló: {e}")
             return None
 
     def _get_avg_daily_volume_twelvedata(self, symbol: str):
