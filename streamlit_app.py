@@ -720,9 +720,19 @@ with tab_live:
             st.caption(f"Archivo: **{up.name}** ({len(up.getvalue())} bytes)")
 
     if st.button("➕ Cargar lista a watchlist", type="primary", key="btn_import_tickers"):
-        from ticker_from_text import extract_tickers, extract_tickers_from_csv, extract_rows_from_csv
-        # Entradas ricas: symbol + gap/rvol del CSV Moomoo; el texto/Webull aporta solo símbolos
-        entries: list = []
+        from ticker_from_text import extract_tickers, extract_tickers_from_csv
+        try:
+            from ticker_from_text import extract_rows_from_csv
+        except ImportError:
+            # Fallback si el deploy no subió ticker_from_text actualizado
+            def extract_rows_from_csv(file_bytes, max_n=80):
+                return [{"symbol": s} for s in extract_tickers_from_csv(file_bytes, max_n=max_n)]
+            st.warning(
+                "⚠️ Falta extract_rows_from_csv en el servidor. "
+                "Sube de nuevo **todo** el ZIP (incluye ticker_from_text.py). "
+                "Mientras tanto solo se leen símbolos, no el Gap del CSV."
+            )
+        entries = []
         by_sym = {}
         sources = []
         if up is not None:
@@ -733,9 +743,12 @@ with tab_live:
             else:
                 rows = extract_rows_from_csv(raw)
                 for e in rows:
-                    by_sym[e["symbol"]] = dict(e)
+                    if isinstance(e, str):
+                        by_sym[e] = {"symbol": e}
+                    else:
+                        by_sym[e["symbol"]] = dict(e)
                 sources.append(f"CSV:{len(rows)}")
-                n_gap = sum(1 for e in rows if e.get("gap_override") is not None)
+                n_gap = sum(1 for e in rows if isinstance(e, dict) and e.get("gap_override") is not None)
                 if n_gap:
                     sources.append(f"gap_CSV:{n_gap}")
         blob = (pasted or "").strip()
