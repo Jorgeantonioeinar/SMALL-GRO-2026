@@ -79,7 +79,134 @@ def extract_tickers(text: str, max_n: int = 80) -> List[str]:
     return out[:max_n]
 
 
+
+def _parse_pct(val) -> float | None:
+    if val is None:
+        return None
+    s = str(val).strip().replace(",", "").replace("%", "").replace("+", "")
+    if not s or s.lower() in ("n/a", "na", "-", "none", ""):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+
+def _parse_float_num(val) -> float | None:
+    if val is None:
+        return None
+    s = str(val).strip().replace(",", "").replace("$", "").upper()
+    if not s:
+        return None
+    mult = 1.0
+    if s.endswith("B"):
+        mult = 1e9
+        s = s[:-1]
+    elif s.endswith("M"):
+        mult = 1e6
+        s = s[:-1]
+    elif s.endswith("K"):
+        mult = 1e3
+        s = s[:-1]
+    try:
+        return float(s) * mult
+    except Exception:
+        return None
+
+
+def extract_rows_from_csv(file_bytes: bytes, max_n: int = 80) -> list:
+    """
+    CSV Moomoo/Webull → lista de dicts ricos:
+      symbol, gap_override (Pre Mkt % o % Chg), rvol_override (Vol Ratio),
+      price_hint, float_override (si hay float en CSV).
+    Si no hay columnas, cae a solo símbolos.
+    """
+    for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
+        try:
+            text = file_bytes.decode(enc)
+            break
+        except Exception:
+            text = file_bytes.decode("utf-8", errors="replace")
+
+    rows_out = []
+    seen = set()
+    try:
+        sample = text[:4096]
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+        if not reader.fieldnames:
+            raise ValueError("sin header")
+        keys = {(k or "").strip().lower(): k for k in reader.fieldnames if k}
+
+        def find_key(*cands):
+            for c in cands:
+                if c in keys:
+                    return keys[c]
+            for lk, orig in keys.items():
+                for c in cands:
+                    if c in lk:
+                        return orig
+            return None
+
+        sym_key = find_key("symbol", "ticker", "sym", "code", "stock")
+        # Moomoo premarket gap
+        gap_key = find_key(
+            "pre mkt % chg", "pre mkt %", "premarket %", "pre-market %",
+            "% chg", "chg%", "change %", "percent change", "% change",
+        )
+        # Prefer Pre Mkt % Chg over session % Chg if both exist
+        pre_key = find_key("pre mkt % chg", "pre mkt %", "premarket % chg", "pre-market % chg")
+        if pre_key:
+            gap_key = pre_key
+        rvol_key = find_key("vol ratio", "volume ratio", "rvol", "rel volume", "relative volume")
+        price_key = find_key("pre mkt stock price", "pre market price", "last", "price", "last price")
+        float_key = find_key("float", "shares float", "float shares")
+
+        if not sym_key:
+            # fallback symbols only
+            return [{"symbol": s} for s in extract_tickers_from_csv(file_bytes, max_n=max_n)]
+
+        for row in reader:
+            raw = (row.get(sym_key) or "").strip()
+            if not raw:
+                continue
+            first = raw.split()[0]
+            tok = _clean_token(first)
+            if not _is_ticker(tok) or tok in seen:
+                continue
+            seen.add(tok)
+            entry = {"symbol": tok}
+            g = _parse_pct(row.get(gap_key)) if gap_key else None
+            if g is not None:
+                entry["gap_override"] = g
+            rv = _parse_pct(row.get(rvol_key)) if rvol_key else None
+            if rv is None and rvol_key:
+                rv = _parse_float_num(row.get(rvol_key))
+            if rv is not None:
+                entry["rvol_override"] = rv
+            px = _parse_float_num(row.get(price_key)) if price_key else None
+            if px is not None:
+                entry["price_hint"] = px
+            fl = _parse_float_num(row.get(float_key)) if float_key else None
+            if fl is not None and fl > 1000:
+                entry["float_override"] = fl
+            rows_out.append(entry)
+            if len(rows_out) >= max_n:
+                break
+        if rows_out:
+            return rows_out
+    except Exception:
+        pass
+
+    return [{"symbol": s} for s in extract_tickers_from_csv(file_bytes, max_n=max_n)]
+
+
 def extract_tickers_from_csv(file_bytes: bytes, max_n: int = 80) -> List[str]:
+    """CSV Moomoo/Webull: columna Symbol/Ticker, o primera columna. (solo símbolos)"""
+
     """CSV Moomoo/Webull: columna Symbol/Ticker, o primera columna."""
     for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
         try:

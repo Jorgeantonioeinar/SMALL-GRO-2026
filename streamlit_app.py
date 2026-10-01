@@ -720,43 +720,58 @@ with tab_live:
             st.caption(f"Archivo: **{up.name}** ({len(up.getvalue())} bytes)")
 
     if st.button("➕ Cargar lista a watchlist", type="primary", key="btn_import_tickers"):
-        from ticker_from_text import extract_tickers, extract_tickers_from_csv
-        syms: list = []
+        from ticker_from_text import extract_tickers, extract_tickers_from_csv, extract_rows_from_csv
+        # Entradas ricas: symbol + gap/rvol del CSV Moomoo; el texto/Webull aporta solo símbolos
+        entries: list = []
+        by_sym = {}
         sources = []
         if up is not None:
             raw = up.getvalue()
-            syms = extract_tickers_from_csv(raw)
-            sources.append(f"CSV:{len(syms)}")
+            name = (getattr(up, "name", "") or "").lower()
+            if name.endswith((".xlsx", ".xls")):
+                st.error("Sube el archivo como **CSV** (en Excel: Guardar como → CSV). El .xlsx no se lee aquí.")
+            else:
+                rows = extract_rows_from_csv(raw)
+                for e in rows:
+                    by_sym[e["symbol"]] = dict(e)
+                sources.append(f"CSV:{len(rows)}")
+                n_gap = sum(1 for e in rows if e.get("gap_override") is not None)
+                if n_gap:
+                    sources.append(f"gap_CSV:{n_gap}")
         blob = (pasted or "").strip()
         if blob:
             from_paste = extract_tickers(blob)
             sources.append(f"texto:{len(from_paste)}")
             for s in from_paste:
-                if s not in syms:
-                    syms.append(s)
+                if s not in by_sym:
+                    by_sym[s] = {"symbol": s}
         ban = {"AAPL", "TSLA", "MSFT", "AMZN", "NVDA", "META", "GOOG", "GOOGL"}
-        syms = [s for s in syms if s not in ban]
-        if not syms:
+        entries = [v for k, v in by_sym.items() if k not in ban]
+        if not entries:
             st.error(
                 "No se detectó ningún ticker. "
-                "Usa CSV de Moomoo o pega y pulsa Cargar lista."
+                "Usa CSV de Moomoo (recomendado) o pega texto y pulsa Cargar lista."
             )
         else:
+            syms = [e["symbol"] for e in entries]
             try:
                 ok = replace_manual_watchlist(syms)
             except Exception as e:
                 ok = list(syms)
                 st.warning(f"Archivo no escrito ({e}); sesión OK.")
             st.session_state["manual_watchlist"] = list(ok)
+            # Guardar overrides (gap/rvol) del CSV para el scoring
+            st.session_state["manual_entries_rich"] = entries
             st.session_state.pop("manual_ranked", None)
-            # Auto-limpiar el pegado tras cargar (siguiente rerun)
             st.session_state["_clear_import_paste"] = True
+            gap_n = sum(1 for e in entries if e.get("gap_override") is not None)
             st.success(
                 f"✅ Watchlist: **{len(ok)}** tickers ({', '.join(sources)})\n\n"
                 + ", ".join(ok[:40])
                 + ("…" if len(ok) > 40 else "")
+                + (f"\n\n📊 **{gap_n}** con Gap% tomado del CSV Moomoo (no solo API)." if gap_n else "")
             )
-            st.info("Siguiente: **Manual** + **Rápido** → **Calificar** (1 clic).")
+            st.info("Siguiente: **Manual** + **Rápido** → **Calificar** (1 clic). CSV + texto se **unen** en una sola lista.")
             st.rerun()
 
     _wl = st.session_state.get("manual_watchlist") or [e["symbol"] for e in load_manual_tickers()]
@@ -822,8 +837,11 @@ with tab_live:
                             universe.append(e)
             else:
                 # Manual: SOLO watchlist completa (sin recorte a 15)
+                rich = st.session_state.get("manual_entries_rich")
                 mw = st.session_state.get("manual_watchlist")
-                if mw:
+                if rich:
+                    universe = list(rich)
+                elif mw:
                     universe = [{"symbol": s, "float_override": None, "rvol_override": None} for s in mw]
                 else:
                     universe = load_manual_tickers()
@@ -878,7 +896,9 @@ with tab_live:
     # -----------------------------------------------------------------
     # MIS TICKERS MANUALES
     # -----------------------------------------------------------------
-    if st.session_state.get("manual_watchlist"):
+    if st.session_state.get("manual_entries_rich"):
+        manual_entries_raw = list(st.session_state["manual_entries_rich"])
+    elif st.session_state.get("manual_watchlist"):
         manual_entries_raw = [
             {"symbol": s, "float_override": None, "rvol_override": None}
             for s in st.session_state["manual_watchlist"]

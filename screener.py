@@ -520,14 +520,14 @@ def compute_atr(bars: pd.DataFrame, period=config.ATR_PERIOD):
 _smart_engine = TitonSmartEngine()
 
 
-def score_candidate(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None):
+def score_candidate(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None, gap_override=None):
     """Despachador: usa el motor clásico o el TitonSmartEngine según config.SCORING_ENGINE."""
     if config.SCORING_ENGINE == "smart":
-        return score_candidate_smart(symbol, fetcher, float_override, rvol_override)
-    return _score_candidate_classic(symbol, fetcher, float_override, rvol_override)
+        return score_candidate_smart(symbol, fetcher, float_override, rvol_override, gap_override)
+    return _score_candidate_classic(symbol, fetcher, float_override, rvol_override, gap_override)
 
 
-def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None):
+def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None, gap_override=None):
     """
     Arma el diccionario de datos que espera TitonSmartEngine.evaluate()
     y traduce su veredicto de vuelta al mismo formato que usa el resto
@@ -698,7 +698,7 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     return _finalize_candidate(result, bars=bars, pmh=pmh)
 
 
-def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None):
+def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=None, rvol_override=None, gap_override=None):
     """
     Calcula todas las métricas de un ticker y devuelve un diccionario con
     el detalle + la calificación final de 1 a 10.
@@ -754,7 +754,15 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
     score = 0.0
 
     # --- 1) Gap / momentum del día (umbral según sesión: PM / regular / AH) ---
-    gap_pct = fetcher.get_premarket_change_pct(symbol)
+    # Prioridad: dato del CSV Moomoo/Webull (gap_override) > API Alpaca
+    if gap_override is not None:
+        try:
+            gap_pct = float(gap_override)
+            result["notes"].append(f"Gap desde CSV/import ({gap_pct}%)")
+        except Exception:
+            gap_pct = fetcher.get_premarket_change_pct(symbol)
+    else:
+        gap_pct = fetcher.get_premarket_change_pct(symbol)
     result["gap_pct"] = gap_pct
     _sess_mode = getattr(config, "_SESSION_MODE_RUNTIME", "auto")
     if _sess_mode in ("strong", "premarket_strong"):
@@ -915,13 +923,14 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
 
     def _one(entry):
         if isinstance(entry, str):
-            symbol, float_override, rvol_override = entry, None, None
+            symbol, float_override, rvol_override, gap_override = entry, None, None, None
         else:
             symbol = entry["symbol"]
             float_override = entry.get("float_override")
             rvol_override = entry.get("rvol_override")
+            gap_override = entry.get("gap_override")
         try:
-            return score_candidate(symbol, fetcher, float_override, rvol_override)
+            return score_candidate(symbol, fetcher, float_override, rvol_override, gap_override)
         except Exception as e:
             logger.warning(f"[{symbol}] Error calculando score: {e}")
             return {
