@@ -660,6 +660,13 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     rvol_daily = vol_metrics.get("rvol_daily")
     rvol_session = vol_metrics.get("rvol_session")
     float_turnover = vol_metrics.get("float_turnover")
+    if rvol_override is not None:
+        try:
+            rvol_session = float(rvol_override)
+            rvol_daily = float(rvol_override)
+            result["notes"].append(f"RVOL desde CSV/import ({rvol_override})")
+        except Exception:
+            pass
     if float_turnover is None and premarket_volume and float_shares:
         float_turnover = round(premarket_volume / float_shares, 4)
 
@@ -678,7 +685,7 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     result = {
         "symbol": symbol,
         "price": price,
-        "gap_pct": verdict["gap_pct"],
+        "gap_pct": (float(gap_override) if gap_override is not None else verdict["gap_pct"]),
         "rvol": structural_rvol,
         "rvol_daily": rvol_daily,
         "rvol_session": rvol_session,
@@ -929,8 +936,15 @@ def rank_candidates(fetcher: DataFetcher, tickers=None):
             float_override = entry.get("float_override")
             rvol_override = entry.get("rvol_override")
             gap_override = entry.get("gap_override")
+            price_hint = entry.get("price_hint")
         try:
-            return score_candidate(symbol, fetcher, float_override, rvol_override, gap_override)
+            if gap_override is not None:
+                logger.info(f"[{symbol}] Usando Gap del CSV Moomoo: {gap_override}%")
+            r = score_candidate(symbol, fetcher, float_override, rvol_override, gap_override)
+            if r is not None and r.get("price") is None and price_hint is not None:
+                r["price"] = float(price_hint)
+                r.setdefault("notes", []).append(f"Precio desde CSV ({price_hint})")
+            return r
         except Exception as e:
             logger.warning(f"[{symbol}] Error calculando score: {e}")
             return {

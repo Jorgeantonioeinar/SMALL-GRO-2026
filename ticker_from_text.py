@@ -4,7 +4,7 @@ from __future__ import annotations
 import csv
 import io
 import re
-from typing import List
+from typing import List, Optional, Dict, Any
 
 _STOP = {
     "THE", "AND", "FOR", "ARE", "BUT", "NOT", "YOU", "ALL", "CAN", "HER", "WAS", "ONE",
@@ -80,11 +80,12 @@ def extract_tickers(text: str, max_n: int = 80) -> List[str]:
 
 
 
-def _parse_pct(val) -> float | None:
+
+def _parse_pct(val):
     if val is None:
         return None
     s = str(val).strip().replace(",", "").replace("%", "").replace("+", "")
-    if not s or s.lower() in ("n/a", "na", "-", "none", ""):
+    if not s or s.lower() in ("n/a", "na", "-", "none", "--", ""):
         return None
     try:
         return float(s)
@@ -92,11 +93,11 @@ def _parse_pct(val) -> float | None:
         return None
 
 
-def _parse_float_num(val) -> float | None:
+def _parse_float_num(val):
     if val is None:
         return None
     s = str(val).strip().replace(",", "").replace("$", "").upper()
-    if not s:
+    if not s or s in ("-", "N/A", "NA", "--"):
         return None
     mult = 1.0
     if s.endswith("B"):
@@ -114,12 +115,84 @@ def _parse_float_num(val) -> float | None:
         return None
 
 
-def extract_rows_from_csv(file_bytes: bytes, max_n: int = 80) -> list:
+def _norm_header(h):
+    """Normaliza nombres de columna Moomoo (PM / Regular / AH varían)."""
+    if not h:
+        return ""
+    s = str(h).strip().lower()
+    s = s.replace("\ufeff", "").replace("_", " ").replace("-", " ")
+    s = " ".join(s.split())
+    return s
+
+
+# Claves candidatas por tipo de dato — cubre Premarket, Regular y After-Hours de Moomoo
+_SYM_KEYS = (
+    "symbol", "ticker", "sym", "code", "stock", "证券代码", "代码",
+)
+_GAP_PRE_KEYS = (
+    "pre mkt % chg", "pre mkt %", "premarket % chg", "pre market % chg",
+    "pre market %", "pre-market % chg", "pm % chg", "pm chg%",
+    "pre mkt chg%", "premarket change %",
+)
+_GAP_AH_KEYS = (
+    "after hours % chg", "after hours %", "ah % chg", "ah %", "post mkt % chg",
+    "post market % chg", "after-hours % chg", "after hour % chg", "post % chg",
+)
+_GAP_REG_KEYS = (
+    "% chg", "chg%", "change %", "% change", "percent change", "change%",
+    "day % chg", "today % chg", "last % chg", "涨跌幅",
+)
+_RVOL_KEYS = (
+    "vol ratio", "volume ratio", "rvol", "rel volume", "relative volume",
+    "vol/avg", "vol avg", "相对成交量",
+)
+_PRICE_PRE_KEYS = (
+    "pre mkt stock price", "pre market price", "pre mkt price", "premarket price",
+    "pm price", "pre price",
+)
+_PRICE_AH_KEYS = (
+    "after hours price", "ah price", "post mkt price", "post market price",
+    "after hour price",
+)
+_PRICE_REG_KEYS = (
+    "last", "price", "last price", "last trade", "current price", "最新价",
+)
+_FLOAT_KEYS = (
+    "float", "shares float", "float shares", "流通股",
+)
+_VOLUME_KEYS = (
+    "volume", "vol", "成交量", "turnover volume",
+)
+
+
+def _find_key(keys_map, candidates):
+    """keys_map: normalized_header -> original header"""
+    for c in candidates:
+        c = _norm_header(c)
+        if c in keys_map:
+            return keys_map[c]
+    # partial contains
+    for nk, orig in keys_map.items():
+        for c in candidates:
+            c = _norm_header(c)
+            if c and (c in nk or nk in c):
+                return orig
+    return None
+
+
+def extract_rows_from_csv(file_bytes, max_n=80):
     """
-    CSV Moomoo/Webull → lista de dicts ricos:
-      symbol, gap_override (Pre Mkt % o % Chg), rvol_override (Vol Ratio),
-      price_hint, float_override (si hay float en CSV).
-    Si no hay columnas, cae a solo símbolos.
+    CSV Moomoo/Webull (Premarket / Regular / After-Hours).
+
+    Las columnas CAMBIAN según sesión. Este parser busca en este orden:
+
+      Gap%:   Pre Mkt % Chg  →  After Hours % Chg  →  % Chg (regular)
+      Precio: Pre Mkt Price  →  AH Price           →  Last/Price
+      RVOL:   Vol Ratio (si existe en cualquiera)
+      Float:  Float (si existe)
+
+    Devuelve lista de dicts:
+      symbol, gap_override, rvol_override, price_hint, float_override (opcionales)
     """
     for enc in ("utf-8-sig", "utf-8", "latin-1", "cp1252"):
         try:
@@ -131,7 +204,7 @@ def extract_rows_from_csv(file_bytes: bytes, max_n: int = 80) -> list:
     rows_out = []
     seen = set()
     try:
-        sample = text[:4096]
+        sample = text[:8192]
         try:
             dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
         except Exception:
@@ -139,34 +212,26 @@ def extract_rows_from_csv(file_bytes: bytes, max_n: int = 80) -> list:
         reader = csv.DictReader(io.StringIO(text), dialect=dialect)
         if not reader.fieldnames:
             raise ValueError("sin header")
-        keys = {(k or "").strip().lower(): k for k in reader.fieldnames if k}
 
-        def find_key(*cands):
-            for c in cands:
-                if c in keys:
-                    return keys[c]
-            for lk, orig in keys.items():
-                for c in cands:
-                    if c in lk:
-                        return orig
-            return None
+        keys_map = {_norm_header(k): k for k in reader.fieldnames if k}
 
-        sym_key = find_key("symbol", "ticker", "sym", "code", "stock")
-        # Moomoo premarket gap
-        gap_key = find_key(
-            "pre mkt % chg", "pre mkt %", "premarket %", "pre-market %",
-            "% chg", "chg%", "change %", "percent change", "% change",
+        sym_key = _find_key(keys_map, _SYM_KEYS)
+        # Gap: priorizar columna de la sesión extendida si existe
+        gap_key = (
+            _find_key(keys_map, _GAP_PRE_KEYS)
+            or _find_key(keys_map, _GAP_AH_KEYS)
+            or _find_key(keys_map, _GAP_REG_KEYS)
         )
-        # Prefer Pre Mkt % Chg over session % Chg if both exist
-        pre_key = find_key("pre mkt % chg", "pre mkt %", "premarket % chg", "pre-market % chg")
-        if pre_key:
-            gap_key = pre_key
-        rvol_key = find_key("vol ratio", "volume ratio", "rvol", "rel volume", "relative volume")
-        price_key = find_key("pre mkt stock price", "pre market price", "last", "price", "last price")
-        float_key = find_key("float", "shares float", "float shares")
+        rvol_key = _find_key(keys_map, _RVOL_KEYS)
+        price_key = (
+            _find_key(keys_map, _PRICE_PRE_KEYS)
+            or _find_key(keys_map, _PRICE_AH_KEYS)
+            or _find_key(keys_map, _PRICE_REG_KEYS)
+        )
+        float_key = _find_key(keys_map, _FLOAT_KEYS)
+        vol_key = _find_key(keys_map, _VOLUME_KEYS)
 
         if not sym_key:
-            # fallback symbols only
             return [{"symbol": s} for s in extract_tickers_from_csv(file_bytes, max_n=max_n)]
 
         for row in reader:
@@ -179,23 +244,39 @@ def extract_rows_from_csv(file_bytes: bytes, max_n: int = 80) -> list:
                 continue
             seen.add(tok)
             entry = {"symbol": tok}
+
             g = _parse_pct(row.get(gap_key)) if gap_key else None
             if g is not None:
                 entry["gap_override"] = g
-            rv = _parse_pct(row.get(rvol_key)) if rvol_key else None
-            if rv is None and rvol_key:
-                rv = _parse_float_num(row.get(rvol_key))
+                # etiquetar origen aproximado para notas
+                gk = _norm_header(gap_key)
+                if "pre" in gk or "pm" in gk:
+                    entry["gap_source"] = "moomoo_premarket"
+                elif "after" in gk or "ah" in gk or "post" in gk:
+                    entry["gap_source"] = "moomoo_afterhours"
+                else:
+                    entry["gap_source"] = "moomoo_session"
+
+            rv = None
+            if rvol_key:
+                rv = _parse_pct(row.get(rvol_key))
+                if rv is None:
+                    rv = _parse_float_num(row.get(rvol_key))
             if rv is not None:
                 entry["rvol_override"] = rv
+
             px = _parse_float_num(row.get(price_key)) if price_key else None
-            if px is not None:
+            if px is not None and px > 0:
                 entry["price_hint"] = px
+
             fl = _parse_float_num(row.get(float_key)) if float_key else None
             if fl is not None and fl > 1000:
                 entry["float_override"] = fl
+
             rows_out.append(entry)
             if len(rows_out) >= max_n:
                 break
+
         if rows_out:
             return rows_out
     except Exception:
