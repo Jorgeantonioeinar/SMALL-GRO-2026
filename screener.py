@@ -301,7 +301,7 @@ def enrich_with_halt_and_confidence(result: dict, bars=None, pmh=None) -> dict:
         result["notes"] = (result.get("notes") or []) + [f"HALT activo: {halt.get('reason')}"]
 
     # FINRA Short Volume (contexto, no bloquea por sí solo)
-    if get_short_volume is not None and not getattr(config, "FAST_SCREENING", False):
+    if get_short_volume is not None:  # también en Rápido (FINRA en caché)
         try:
             sv = get_short_volume(result.get("symbol", ""))
             result["short_pct"] = sv.get("short_pct")
@@ -598,7 +598,7 @@ def score_candidate_smart(symbol: str, fetcher: DataFetcher, float_override=None
     if getattr(config, "FAST_SCREENING", False):
         sentiment = None
         catalyst_verified = None
-        dilution = {"reason": "Fast mode", "risk_level": "DESCONOCIDO", "blocked": False, "penalty_points": 0}
+        dilution = {"reason": "Rápido: SEC omitido", "risk_level": "N/D", "blocked": False, "penalty_points": 0}
     else:
         sentiment = fetcher.get_news_sentiment(symbol)
         catalyst_verified = sentiment["score"] > 0.15 if sentiment else None
@@ -871,7 +871,7 @@ def _score_candidate_classic(symbol: str, fetcher: DataFetcher, float_override=N
 
     # --- 6) SEC EDGAR Anti-Offering Shield (dilución) ---
     if getattr(config, "FAST_SCREENING", False):
-        dilution = {"reason": "Fast mode (SEC omitido)", "risk_level": "DESCONOCIDO", "blocked": False, "penalty_points": 0}
+        dilution = {"reason": "Rápido: SEC omitido (usa Completo para dilución)", "risk_level": "N/D", "blocked": False, "penalty_points": 0}
     else:
         dilution = sec_shield.check_dilution_risk(symbol)
     result["dilution_reason"] = dilution["reason"]

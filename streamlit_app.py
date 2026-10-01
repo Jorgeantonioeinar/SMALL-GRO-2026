@@ -920,6 +920,7 @@ with tab_live:
         manual_entries_raw = load_manual_tickers()
 
     st.subheader("📌 Mis Tickers Manuales")
+    st.caption("En **Rápido**: Dilución = N/D (SEC omitido; usa Completo si la necesitas). Short usa FINRA si está disponible.")
     if not manual_entries_raw:
         st.warning("Watchlist vacía. Usa **Cargar lista a watchlist** arriba (CSV o pegado).")
     else:
