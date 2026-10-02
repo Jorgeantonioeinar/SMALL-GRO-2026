@@ -135,11 +135,12 @@ _GAP_PRE_KEYS = (
     "pre mkt chg%", "premarket change %",
 )
 _GAP_AH_KEYS = (
-    "after hours % chg", "after hours %", "ah % chg", "ah %", "post mkt % chg",
-    "post market % chg", "after-hours % chg", "after hour % chg", "post % chg",
+    "post mkt % chg", "post market % chg", "post-market % chg",
+    "after hours % chg", "after hours %", "after-hours % chg", "after hour % chg",
+    "ah % chg", "ah %", "post % chg",
 )
 _GAP_REG_KEYS = (
-    "% chg", "chg%", "change %", "% change", "percent change", "change%",
+    "% chg", "change %", "% change", "percent change", "change%",
     "day % chg", "today % chg", "last % chg", "涨跌幅",
 )
 _RVOL_KEYS = (
@@ -151,8 +152,9 @@ _PRICE_PRE_KEYS = (
     "pm price", "pre price",
 )
 _PRICE_AH_KEYS = (
-    "after hours price", "ah price", "post mkt price", "post market price",
-    "after hour price",
+    "post mkt stock price", "post market stock price",
+    "after hours price", "after hours stock price", "ah price",
+    "post mkt price", "post market price", "after hour price",
 )
 _PRICE_REG_KEYS = (
     "last", "price", "last price", "last trade", "current price", "最新价",
@@ -166,18 +168,27 @@ _VOLUME_KEYS = (
 
 
 def _find_key(keys_map, candidates):
-    """keys_map: normalized_header -> original header"""
-    for c in candidates:
-        c = _norm_header(c)
-        if c in keys_map:
+    """keys_map: normalized_header -> original header.
+
+    Nunca usar match parcial corto (evita que 'Chg' se confunda con
+    'Post Mkt % Chg' / 'pm chg%').
+    """
+    norms = [_norm_header(c) for c in candidates]
+    # 1) Exacto
+    for c in norms:
+        if c and c in keys_map:
             return keys_map[c]
-    # partial contains
+    # 2) Candidato contenido en el header (solo si candidato tiene >= 6 chars)
+    best = None
+    best_len = 0
     for nk, orig in keys_map.items():
-        for c in candidates:
-            c = _norm_header(c)
-            if c and (c in nk or nk in c):
-                return orig
-    return None
+        for c in norms:
+            if not c or len(c) < 6:
+                continue
+            if c in nk and len(c) > best_len:
+                best = orig
+                best_len = len(c)
+    return best
 
 
 def extract_rows_from_csv(file_bytes, max_n=80):
