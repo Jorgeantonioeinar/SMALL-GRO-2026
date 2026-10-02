@@ -135,9 +135,9 @@ class DataFetcher:
     # ALPACA: precios y barras intradía
     # ------------------------------------------------------------------
     def get_bars(self, symbol: str, minutes_back: int = 60, timeframe=TimeFrame.Minute):
-        """Devuelve un DataFrame con barras recientes (OHLCV) de Alpaca."""
+        """Barras OHLCV: Alpaca IEX → Yahoo (AH/PM cuando IEX vacío)."""
         if time.time() < getattr(self, "_alpaca_disabled_until", 0):
-            return pd.DataFrame()
+            return self._yahoo_bars(symbol, minutes_back=minutes_back)
         # Preferir barras IBKR (o Alpaca vía MDM) si el manager está activo
         if get_market_data_manager is not None:
             try:
@@ -164,23 +164,54 @@ class DataFetcher:
             end=end,
             feed=DataFeed.IEX,   # feed gratuito; evita ambigüedad de entitlement con Alpaca
         )
+        df = pd.DataFrame()
+        if time.time() >= getattr(self, "_alpaca_disabled_until", 0):
+            try:
+                bars = self.data_client.get_stock_bars(request)
+                df = bars.df
+                if not df.empty:
+                    if isinstance(df.index, pd.MultiIndex):
+                        df = df.xs(symbol, level=0)
+                    df = df.tail(minutes_back)
+            except Exception as e:
+                msg = str(e).lower()
+                if "too many requests" in msg or "429" in msg:
+                    self._alpaca_disabled_until = time.time() + 90
+                    logger.warning("Alpaca rate limit (bars) — pausa 90s")
+                else:
+                    logger.debug(f"[{symbol}] Alpaca bars: {e}")
+                df = pd.DataFrame()
+        # After-hours / premarket / OTC: IEX a menudo vacío → Yahoo
+        if df is None or df.empty or len(df) < 15:
+            ydf = self._yahoo_bars(symbol, minutes_back=minutes_back)
+            if ydf is not None and not ydf.empty:
+                return ydf
+        return df if df is not None else pd.DataFrame()
+
+
+    def _yahoo_bars(self, symbol: str, minutes_back: int = 390):
+        """Barras vía yfinance cuando Alpaca IEX no tiene datos (AH/PM/OTC)."""
         try:
-            bars = self.data_client.get_stock_bars(request)
-            df = bars.df
-            if df.empty:
-                return pd.DataFrame()
-            # Si viene multi-index (symbol, timestamp), aplanar
-            if isinstance(df.index, pd.MultiIndex):
-                df = df.xs(symbol, level=0)
-            return df.tail(minutes_back)
+            t = yf.Ticker(symbol)
+            # 1m solo últimas sesiones; 5m/15m más robusto en extended
+            for interval, period in (("5m", "5d"), ("15m", "5d"), ("1h", "1mo"), ("1d", "3mo")):
+                try:
+                    hist = t.history(period=period, interval=interval, auto_adjust=True)
+                except Exception:
+                    continue
+                if hist is None or hist.empty or len(hist) < 5:
+                    continue
+                hist = hist.rename(columns={
+                    "Open": "open", "High": "high", "Low": "low",
+                    "Close": "close", "Volume": "volume",
+                })
+                cols = [c for c in ("open", "high", "low", "close", "volume") if c in hist.columns]
+                out = hist[cols].dropna(how="any")
+                if len(out) >= 5:
+                    return out.tail(max(minutes_back, 50))
         except Exception as e:
-            msg = str(e).lower()
-            if "too many requests" in msg or "429" in msg:
-                self._alpaca_disabled_until = time.time() + 90
-                logger.warning("Alpaca rate limit (bars) — pausa 90s")
-            else:
-                logger.warning(f"[{symbol}] Error obteniendo barras de Alpaca: {e}")
-            return pd.DataFrame()
+            logger.debug(f"[{symbol}] Yahoo bars falló: {e}")
+        return pd.DataFrame()
 
     def get_latest_price(self, symbol: str):
         """Precio: MDM/IBKR → realtime → Alpaca IEX → Yahoo (si Alpaca 429)."""
